@@ -31,5 +31,5 @@ jobs:
       - name: Compile native Windows helper
         shell: pwsh
         run: |
-          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:"$env:RUNNER_TEMP\paseo-rc-helper.exe" /reference:System.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll helper/screen/windows.cs
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:"$env:RUNNER_TEMP\paseo-rc-helper.exe" /reference:System.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll "$PWD\helper\screen\windows.cs"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
