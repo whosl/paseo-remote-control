@@ -1,0 +1,20 @@
+{
+  "id": "remote-control",
+  "name": "Remote Control",
+  "description": "Human and agent remote control for Paseo with shared input, visible ownership, live viewing and human takeover.",
+  "requirements": {
+    "paseo": ">=0.13.0"
+  },
+  "build": [
+    [
+      "npm",
+      "ci",
+      "--ignore-scripts"
+    ],
+    [
+      "npm",
+      "run",
+      "typecheck"
+    ]
+  ]
+}

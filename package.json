@@ -1,0 +1,39 @@
+{
+  "name": "@whosl/paseo-remote-control",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "embed:helper": "node scripts/embed-helper.mjs",
+    "typecheck": "node scripts/embed-helper.mjs && node scripts/embed-screen.mjs && tsc --noEmit",
+    "test": "vitest run && npm run test:viewer",
+    "test:niri": "tsx scripts/niri-smoke.ts",
+    "test:swift": "swift test --package-path native/macos",
+    "lint": "oxlint",
+    "test:viewer": "node scripts/geometry-check.mjs && node scripts/held-check.mjs && node scripts/mjpeg-check.mjs && node scripts/frame-cache-check.mjs && node scripts/touch-check.mjs && node scripts/feedback-check.mjs",
+    "test:handoff": "tsx scripts/remote-smoke.ts"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "0.13.0",
+    "@getpaseo/plugin": "0.13.0",
+    "@getpaseo/protocol": "0.13.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^20.9.0",
+    "@types/react": "~19.2.0",
+    "oxlint": "1.61.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.6",
+    "zod": "^4.6.7"
+  },
+  "description": "Human and agent remote control for Paseo with shared input, visible ownership, live viewing and human takeover.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/whosl/paseo-remote-control.git"
+  },
+  "homepage": "https://github.com/whosl/paseo-remote-control"
+}
