@@ -171,7 +171,8 @@ function SettingsControls({
   }, [stopControl]);
 
   const helperState = status?.helperBuildState ?? "checking";
-  const linux = status?.platform === "linux";
+  const linux = status?.platform === "linux" || status?.platform === "windows";
+  const windows = status?.platform === "windows";
 
   return (
     <SettingsSection title="Computer Use">
@@ -205,8 +206,8 @@ function SettingsControls({
 
       {linux ? (
         <SettingsCard>
-          <SettingsRow label="Linux/Niri visual backend" hint="Uses real desktop focus and display coordinates. Screenshots include other visible windows. There are no indexed controls, background input, or global Escape/shake hook." />
-          <SettingsRow label="Capture / input" hint="Requires an unlocked Niri session, grim, wayvnc and wl-clipboard. Use Paseo Stop or disable Computer Use to stop an agent." />
+          <SettingsRow label={windows ? "Windows visual backend" : "Linux/Niri visual backend"} hint={windows ? "Uses real desktop focus and physical display coordinates. Only the target window is rendered for the agent; other apps stay blank. There are no indexed controls or global Escape/shake hook." : "Uses real desktop focus and display coordinates. Screenshots include other visible windows. There are no indexed controls, background input, or global Escape/shake hook."} />
+          <SettingsRow label="Capture / input" hint={windows ? "Requires this user logged in to an unlocked Windows desktop. UAC, lock screens and elevated apps are not bypassed. Use Take over, Pause all or Paseo Stop." : "Requires an unlocked Niri session, grim, wayvnc and wl-clipboard. Use Paseo Stop or disable Computer Use to stop an agent."} />
           <SettingsRow label="Backend" error={status?.helperBuildError ?? null}>
             <Text style={textStyle}>{helperState}</Text>
           </SettingsRow>

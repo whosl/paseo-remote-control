@@ -42,8 +42,9 @@ export function addComputerUseServer(
 
   const mcpEntry = {
     type: "stdio" as const,
-    command: options.shimPath,
+    command: process.platform === "win32" ? process.execPath : options.shimPath,
     args: [
+      ...(process.platform === "win32" ? [options.shimPath] : []),
       "--mcp-proxy",
       "--socket",
       options.socketPath,
@@ -52,6 +53,7 @@ export function addComputerUseServer(
       "--provider",
       provider,
     ],
+    ...(process.platform === "win32" ? { env: { ELECTRON_RUN_AS_NODE: "1" } } : {}),
   };
 
   const nextMcpServers = {

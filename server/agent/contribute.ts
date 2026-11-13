@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, copyFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { constants, copyFileSync, existsSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { PluginServerContext, PluginSettingsState } from "@getpaseo/plugin/server";
@@ -93,7 +93,7 @@ function resolveStatePaths(): {
   migrateLegacyIdentityMap(stateRoot, stateDir, computeLegacyHomeKey());
 
   const candidateSocket = path.join(stateDir, "mcp.sock");
-  const socketPath =
+  const socketPath = process.platform === "win32" ? `\\\\.\\pipe\\paseo-cu-${homeKey}` :
     Buffer.byteLength(candidateSocket, "utf8") < 100
       ? candidateSocket
       : path.join("/tmp", `paseo-cu-${process.getuid?.() ?? 0}-${homeKey}.sock`);
@@ -113,6 +113,13 @@ export interface AgentContributionOptions {
 export default function contribute(server: PluginServerContext, options: AgentContributionOptions = {}) {
   const settingsHandle = server.registerSettings(computerUseSettings);
   const { stateDir, socketPath } = resolveStatePaths();
+  let socketAuthToken: string | undefined;
+  if (process.platform === "win32") {
+    const file = path.join(stateDir, "mcp-token");
+    if (!existsSync(file)) writeFileSync(file, randomUUID() + randomUUID(), { flag: "wx", mode: 0o600 });
+    socketAuthToken = readFileSync(file, "utf8").trim();
+    if (socketAuthToken.length < 64) throw new Error("Invalid Windows MCP authentication token");
+  }
   const identityStore = new ClientIdentityStore(stateDir);
 
   // The host only notifies subscribers on change, so read once for the initial
@@ -145,7 +152,7 @@ export default function contribute(server: PluginServerContext, options: AgentCo
   let helperBuildError: string | null = null;
   let compiledBinaryPath: string | undefined;
 
-  const initialShim = installMcpShim({ stateDir, socketPath });
+  const initialShim = installMcpShim({ stateDir, socketPath, authToken: socketAuthToken });
   let shimPath = initialShim.shimPath;
 
   if (process.platform === "darwin") {
@@ -166,7 +173,7 @@ export default function contribute(server: PluginServerContext, options: AgentCo
         helperBuildState = "failed";
         helperBuildError = err instanceof Error ? err.message : String(err);
       });
-  } else if (process.platform === "linux") {
+  } else if (process.platform === "linux" || (process.platform === "win32" && options.helperPort)) {
     // Niri uses native Wayland capture/input; there is no Swift build.
     helperBuildState = "ready";
   } else {
@@ -196,8 +203,9 @@ export default function contribute(server: PluginServerContext, options: AgentCo
   const service = createComputerUseService({
     helperPort: helperProcess,
     socketPath,
-    platformSupported: process.platform === "darwin" || process.platform === "linux",
-    target: process.platform === "linux" ? "linux" : "mac",
+    socketAuthToken,
+    platformSupported: process.platform === "darwin" || process.platform === "linux" || (process.platform === "win32" && !!options.helperPort),
+    target: process.platform === "win32" ? "windows" : process.platform === "linux" ? "linux" : "mac",
     getSettings: () => currentSettings,
     getHelperBuildStatus: () => ({
       state: helperBuildState,

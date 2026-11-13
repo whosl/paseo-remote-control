@@ -12,6 +12,7 @@ export interface SocketHelloPayload {
 
 export interface SocketListenerOptions {
   socketPath: string;
+  authToken?: string;
   createServerForClient: (hello: SocketHelloPayload) => ComputerUseMcpServer;
   // Called once when a connection that sent a hello closes.
   onClientClosed?: (hello: SocketHelloPayload) => void | Promise<void>;
@@ -19,6 +20,7 @@ export interface SocketListenerOptions {
 
 export class ComputerUseSocketListener {
   private readonly socketPath: string;
+  private readonly authToken?: string;
   private readonly createServerForClient: (
     hello: SocketHelloPayload,
   ) => ComputerUseMcpServer;
@@ -33,6 +35,7 @@ export class ComputerUseSocketListener {
 
   constructor(options: SocketListenerOptions) {
     this.socketPath = options.socketPath;
+    this.authToken = options.authToken;
     this.createServerForClient = options.createServerForClient;
     this.onClientClosed = options.onClientClosed;
   }
@@ -46,7 +49,7 @@ export class ComputerUseSocketListener {
       return;
     }
 
-    mkdirSync(path.dirname(this.socketPath), { recursive: true });
+    if (!this.socketPath.startsWith("\\\\.\\pipe\\")) mkdirSync(path.dirname(this.socketPath), { recursive: true });
     if (existsSync(this.socketPath)) {
       // A socket file left by a crashed daemon refuses connections and is
       // safe to remove. A socket that accepts one belongs to a running
@@ -71,7 +74,7 @@ export class ComputerUseSocketListener {
 
     await new Promise<void>((resolve, reject) => {
       netServer.once("error", reject);
-      netServer.listen(this.socketPath, () => {
+      netServer.listen(this.socketPath.startsWith("\\\\.\\pipe\\") && this.authToken ? { path: this.socketPath, readableAll: true, writableAll: true } : this.socketPath, () => {
         netServer.off("error", reject);
         resolve();
       });
@@ -128,6 +131,7 @@ export class ComputerUseSocketListener {
     let mcpServer: ComputerUseMcpServer | null = null;
     let clientHello: SocketHelloPayload | null = null;
     let queue: Promise<void> = Promise.resolve();
+    const helloTimer = this.authToken ? setTimeout(() => socket.destroy(), 3000) : undefined;
 
     const processLine = async (line: string) => {
       const trimmed = line.trim();
@@ -157,6 +161,8 @@ export class ComputerUseSocketListener {
         (parsed as { hello?: unknown }).hello !== null
       ) {
         const rawHello = (parsed as { hello: Record<string, unknown> }).hello;
+        if (this.authToken && rawHello.authToken !== this.authToken) { socket.destroy(); return; }
+        clearTimeout(helloTimer);
         const hello: SocketHelloPayload = {
           clientId:
             typeof rawHello.clientId === "string" && rawHello.clientId.trim()
@@ -176,6 +182,7 @@ export class ComputerUseSocketListener {
       }
 
       if (mcpServer === null) {
+        if (this.authToken) { socket.destroy(); return; }
         clientHello = { clientId: "default", agentId: null };
         mcpServer = this.createServerForClient(clientHello);
       }
@@ -188,6 +195,8 @@ export class ComputerUseSocketListener {
 
     socket.on("data", (chunk: string) => {
       buffer += chunk;
+      if (this.authToken && !mcpServer && buffer.length > 16 * 1024) { socket.destroy(); return; }
+      if (buffer.length > 4 * 1024 * 1024) { socket.destroy(); return; }
       for (;;) {
         const newlineIdx = buffer.indexOf("\n");
         if (newlineIdx === -1) {
@@ -200,6 +209,7 @@ export class ComputerUseSocketListener {
     });
 
     socket.on("close", () => {
+      clearTimeout(helloTimer);
       this.sockets.delete(socket);
       const hello = clientHello;
       if (hello && this.onClientClosed) {

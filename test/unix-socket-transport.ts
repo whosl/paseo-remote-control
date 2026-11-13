@@ -14,7 +14,7 @@ export class UnixSocketTransport implements Transport {
 
   constructor(
     private readonly socketPath: string,
-    private readonly hello: { clientId: string; agentId?: string; provider?: string },
+    private readonly hello: { clientId: string; agentId?: string; provider?: string; authToken?: string },
   ) {}
 
   async start(): Promise<void> {

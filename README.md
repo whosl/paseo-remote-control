@@ -13,8 +13,8 @@ paseo-computer-use, with a shared input backend and human-priority control autho
   providers are Claude, Codex and Oh My Pi. New agents receive the `paseo-computer`
   MCP server; existing sessions may need a new agent or an MCP reconnect.
 - During an agent action, the viewer shows its identity, target app and tool. On
-  Linux/Niri, a layer-shell notice on the host also offers **Take over** and
-  **Pause all**, without taking keyboard focus.
+  Linux/Niri and Windows, a local notice also offers **Take over** and **Pause all**,
+  without taking keyboard focus.
 - Watching does not claim control. While an agent owns control, viewer input is
   refused at the server, not just disabled visually. Choose **Take over** first.
 - Taking over cancels active agent tools, invalidates queued actions, waits for
@@ -39,7 +39,7 @@ the development tests. The installer runs the preparation commands in the manife
 | Linux / Niri | Persistent JPEG, optional direct H.264, touch/trackpad | Focused-window visual tools | Combined live tests on Niri |
 | macOS 14+ | Original screen helper | Original accessibility tools and native stop/overlay | Inherited backends; combined path not tested on a Mac |
 | Other Linux desktops | Original X11/portal viewer | Not implemented | Combined path not tested |
-| Windows | Experimental original viewer | Not implemented | Combined path not tested |
+| Windows 10/11 | GDI JPEG, touch/trackpad | Focused-window visual tools | Combined live tests on a Windows service host |
 
 Mobile/browser UI is React Native-compatible. Native iOS/Android retain the JPEG
 path. Native phone rendering and vibration motors have not been tested end to
@@ -110,10 +110,47 @@ NAT traversal. Failed direct video automatically falls back to JPEG.
 
 Agent policy retains the host enable switch, provider approval mode, blocked-app
 rules, browser opt-in, focus/lock checks and turn-end cleanup. Niri tools are
-visual-coordinate tools, not an accessibility tree. Captures cover a whole display;
+visual-coordinate tools, not an accessibility tree. Niri captures cover a whole display;
 other visible apps may be included, and blocked apps on that workspace refuse the
 capture. Images and tool results reach the agent's configured model provider.
 There is no automatic screenshot recording or upload by this plugin.
+
+### Windows hosts
+
+Windows needs .NET Framework 4.x, Windows PowerShell, Task Scheduler and the Paseo
+user logged in to an unlocked desktop. The helper is compiled on the host with
+the existing Framework C# compiler. No Python, VNC server or extra TCP listener is
+needed. The human viewer uses JPEGs carried by Paseo; Windows H.264/WebRTC and
+changed-frame long polling are not implemented.
+
+The on-demand bridge also works when Paseo runs in Session 0 as a service. It
+creates temporary `Paseo-Remote-Control-*` tasks with an interactive **limited**
+user token, not Highest privileges. It does not restart or move the daemon.
+The tasks/helpers are removed on graceful plugin stop. A hard process/OS crash
+can leave an orphan task registration; after a restart, idle old registrations
+can be removed from Task Scheduler. No logon/startup trigger is registered.
+
+The desktop profile defaults to the daemon's home directory. A SYSTEM service
+without the user's profile environment can set `PASEO_RC_WINDOWS_PROFILE` to
+that user's profile path. The bridge refuses a different profile unless the
+service is SYSTEM, and requires that exact user to have an interactive Explorer
+session. It does not choose an arbitrary other logged-in user. Local IPC uses
+per-launch bridge nonces and a persistent private MCP token. Bridge secrets are
+passed over stdin into files with explicit desktop-user/SYSTEM ACLs, not task XML
+or command lines. Protect the Paseo user's profile and plugin state from other accounts.
+
+Agent screenshots use `PrintWindow` to render only the intended window onto a
+blank display-sized canvas. They do not capture adjacent applications, while
+human viewing still shows the whole desktop. Agent coordinates remain display-local
+physical pixels; image scaling is reported. Native input checks the window/app,
+foreground focus and pointer hit target before delivery. Some GPU/DRM applications
+cannot be rendered this way or return a blank image. Window-only rendering is not
+equivalent to the composited human screen and may omit overlays/occlusion.
+
+The native top-right notice offers **Take over** and **Pause all** without taking
+keyboard focus. Agent input waits for its visible acknowledgement. The lock screen,
+sign-in/UAC secure desktop and higher-integrity applications are not bypassed.
+Windows, like Niri, has no global Escape/shake or physical-input auto-takeover hook.
 
 Niri has no global physical Escape/shake interception or automatic same-window
 human-activity detector. Use the host notice, viewer takeover/pause controls, or
@@ -157,5 +194,10 @@ It verifies real MCP input, live screen capture, in-flight cancellation, human
 input after cleanup, refusal of a second agent and the host takeover button.
 It leaves human priority enabled. Fixture images/config backups under `build/`
 and `artifacts/` are ignored and must not be committed.
+
+On Windows use the same explicit opt-in and CLI-utils environment with
+`npm run test:windows-handoff`. It opens a disposable offline WinForms fixture,
+checks real MCP Unicode input, watching, takeover/cancellation, sticky human
+priority and the native notice button, then closes the fixture and restores focus.
 
 See [architecture](docs/ARCHITECTURE.md) and [third-party notices](THIRD_PARTY_NOTICES.md).

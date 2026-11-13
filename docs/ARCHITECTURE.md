@@ -39,3 +39,21 @@ where available; a local unbound MCP client is labelled by its caller ID instead
 The local UNIX socket and paired client API are trusted interfaces, not a boundary
 against malicious same-user processes. No keys, pasted text or screenshot payloads
 are added to the ownership state.
+
+On Windows, `server/host/windows.ts` uses authenticated local named pipes and
+on-demand limited-token interactive tasks to bridge a Session 0 daemon to its
+configured user's desktop. The input bridge is shared by the viewer and agent;
+a separate capture bridge serves human and agent images so input never queues
+behind PrintWindow. Cancelling an agent capture relinquishes its queue slot without
+waiting for that read-only operation; late images are discarded.
+The C# helper provides native focus, hit-target and secure-desktop checks,
+Unicode/scan-code input, held-key cleanup and a no-activate WinForms control notice.
+Agent captures render only their target window using PrintWindow onto a blank
+display canvas. Human captures use GDI for the composited screen. Coordinates
+remain physical display-local pixels, with the screenshot's scale explicit.
+Windows tool discovery excludes accessibility operations and does not require
+the macOS Escape tap. MCP named pipes require the private persisted shim token;
+bridge pipes require an independent per-launch nonce before any response is trusted.
+Nonce files grant access only to the desktop user's SID and SYSTEM, with inherited
+permissions removed. The secret is delivered to the launcher over stdin; task
+arguments contain only its path. Same-user processes remain trusted, not isolated.

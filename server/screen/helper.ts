@@ -162,7 +162,7 @@ async function compileWindowsHelper(source: string, output: string): Promise<voi
   }
   const references = ["System.dll", "System.Drawing.dll", "System.Windows.Forms.dll", "System.Web.Extensions.dll"].map((dll) => `/reference:${dll}`);
   try {
-    await execCommand(compiler, ["/nologo", "/optimize+", "/target:exe", "/platform:anycpu", `/out:${output}`, ...references, source], {
+    await execCommand(compiler, ["/nologo", "/optimize+", "/target:winexe", "/platform:anycpu", `/out:${output}`, ...references, source], {
       timeout: 300_000,
       maxBuffer: 4 * 1024 * 1024,
     });

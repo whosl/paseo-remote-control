@@ -15,3 +15,21 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npx vitest run test/windows.test.ts test/windows-ipc.test.ts test/control-coordinator.test.ts
+      - run: npm run test:viewer
+      - name: Compile native Windows helper
+        shell: pwsh
+        run: |
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:"$env:RUNNER_TEMP\paseo-rc-helper.exe" /reference:System.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll helper/screen/windows.cs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

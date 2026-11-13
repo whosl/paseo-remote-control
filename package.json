@@ -1,6 +1,6 @@
 {
   "name": "@whosl/paseo-remote-control",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -12,7 +12,8 @@
     "test:swift": "swift test --package-path native/macos",
     "lint": "oxlint",
     "test:viewer": "node scripts/geometry-check.mjs && node scripts/held-check.mjs && node scripts/mjpeg-check.mjs && node scripts/frame-cache-check.mjs && node scripts/touch-check.mjs && node scripts/feedback-check.mjs",
-    "test:handoff": "tsx scripts/remote-smoke.ts"
+    "test:handoff": "tsx scripts/remote-smoke.ts",
+    "test:windows-handoff": "tsx scripts/windows-smoke.ts"
   },
   "devDependencies": {
     "@getpaseo/client": "0.13.0",

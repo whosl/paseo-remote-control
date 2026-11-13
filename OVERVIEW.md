@@ -7,13 +7,17 @@ cursor-follow, an on-demand keyboard and clipboard, and local click feedback.
 One control authority governs viewer and MCP input. Agent control shows a live
 identity/action notice. Take over cancels agent work and queued input, releases
 held keys and reserves control for humans until explicitly allowed again. Watching
-alone does not claim control. Linux/Niri additionally displays a local layer-shell
+alone does not claim control. Linux/Niri and Windows additionally display a local
 notice with takeover and pause buttons; if that notice cannot be shown, agent input
 is refused. The agent tools retain application restrictions and browser opt-in.
 
-Paseo 0.13 or later is required. The combined input path is tested on Linux/Niri.
+Paseo 0.13 or later is required. The combined input path is tested on Linux/Niri and Windows.
 Other viewer platforms and macOS accessibility tools are inherited and not tested
-as a combined system. Windows agent tools are not available. Niri requires GTK /
+as a combined system. Windows uses focused-window visual tools, requires an unlocked
+logged-in desktop, .NET Framework, PowerShell and Task Scheduler, and can bridge a
+Session 0 daemon using temporary limited-token tasks. Agent captures render only
+the target window; some GPU apps may return blank. Human viewing uses full-desktop
+JPEGs. UAC/lock screens and elevated application input are not bypassed. Niri requires GTK /
 GtkLayerShell, grim, WayVNC, wl-clipboard and an unlocked graphical session. Native
 phone haptics depend on device support and are not physically verified.
 
@@ -22,4 +26,4 @@ video in supported browsers. Direct connections have no configured TURN service;
 unreachable video falls back to JPEG. Agent screenshots and tool results reach the
 configured model provider. Clipboard paste can replace host text. This controls
 real apps and is a trusted-code coordination mechanism, not an operating-system
-sandbox. Niri does not have a global physical Escape stop hook.
+sandbox. Niri and Windows do not have a global physical Escape stop hook.

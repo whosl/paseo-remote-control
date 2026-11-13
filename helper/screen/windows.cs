@@ -18,6 +18,8 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.IO.Pipes;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -62,25 +64,44 @@ namespace PaseoScreen
         static StreamWriter output;
 
         [STAThread]
-        static int Main()
+        static int Main(string[] args)
         {
             Native.EnableDpiAwareness();
-            output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
-            output.AutoFlush = true;
-            var input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
-            string line;
-            while ((line = input.ReadLine()) != null)
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Stream stream = null;
+            try
             {
-                if (line.Length == 0) continue;
-                Handle(line);
+                if (args.Length == 3 && args[0] == "--pipe")
+                {
+                    // The UI writes unsolicited stop events while the command thread is blocked reading.
+                    // An overlapped handle is required; a synchronous pipe serializes those operations.
+                    var pipe = new NamedPipeClientStream(".", args[1], PipeDirection.InOut, PipeOptions.Asynchronous);
+                    stream = pipe; pipe.Connect(20000);
+                }
+                output = new StreamWriter(stream ?? Console.OpenStandardOutput(), new UTF8Encoding(false));
+                output.AutoFlush = true;
+                if (stream != null) Reply(new Dictionary<string, object> { { "hello", File.ReadAllText(args[2], Encoding.UTF8).Trim() }, { "sessionId", Process.GetCurrentProcess().SessionId } });
+                var input = new StreamReader(stream ?? Console.OpenStandardInput(), new UTF8Encoding(false));
+                string line;
+                while ((line = input.ReadLine()) != null)
+                {
+                    if (line.Length == 0) continue;
+                    Handle(line);
+                }
+                return 0;
             }
-            return 0;
+            finally
+            {
+                Input.ReleaseAll();
+                try { ControlNotice.Stop(); } catch { }
+                if (stream != null) stream.Dispose();
+            }
         }
 
-        static void Reply(Dictionary<string, object> reply)
+        public static void Reply(Dictionary<string, object> reply)
         {
-            output.Write(Json.Serialize(reply));
-            output.Write("\n");
+            lock (Json) { output.Write(Json.Serialize(reply)); output.Write("\n"); }
         }
 
         static void Handle(string line)
@@ -88,7 +109,7 @@ namespace PaseoScreen
             Dictionary<string, object> request;
             try
             {
-                request = Json.Deserialize<Dictionary<string, object>>(line);
+                lock (Json) request = Json.Deserialize<Dictionary<string, object>>(line);
             }
             catch (Exception)
             {
@@ -119,6 +140,13 @@ namespace PaseoScreen
                     case "input":
                         result = Input.Handle(request);
                         break;
+                    case "scene": result = WindowsScene.Read(); break;
+                    case "focus": result = WindowsScene.Focus(request); break;
+                    case "notice": result = ControlNotice.Update(request); break;
+                    case "notice-location": result = ControlNotice.Location(); break;
+                    case "release": Input.ReleaseAll(); result = new Dictionary<string, object>(); break;
+                    case "signature": result = WindowsScene.Signature(request); break;
+                    case "clipboard-write": ClipboardText.Write(Program.Str(request, "text") ?? ""); result = new Dictionary<string, object>(); break;
                     case "clipboard":
                         result = ClipboardText.Read();
                         break;
@@ -142,7 +170,12 @@ namespace PaseoScreen
             var displays = Displays.List();
             var status = new Dictionary<string, object>();
             // Windows has no screen-capture or input permission for desktop apps.
-            status["screenRecording"] = true;
+            status["screenRecording"] = Process.GetCurrentProcess().SessionId != 0;
+            status["backend"] = "windows-gdi";
+            status["captureMode"] = "screenshot";
+            status["webrtc"] = false;
+            status["frameWait"] = false;
+            status["sessionId"] = Process.GetCurrentProcess().SessionId;
             status["accessibility"] = true;
             status["locked"] = Native.SecureDesktopShowing();
             var list = new List<object>();
@@ -289,7 +322,8 @@ namespace PaseoScreen
             int imageWidth, imageHeight;
             try
             {
-                jpeg = Grab(display.Bounds, maxWidth, quality, out imageWidth, out imageHeight);
+                if (Program.Has(request, "expectedWindow")) WindowsScene.CheckTarget(request);
+                jpeg = Grab(display.Bounds, maxWidth, quality, new IntPtr((long)Program.Num(request, "expectedWindow", 0)), out imageWidth, out imageHeight);
             }
             catch (Exception)
             {
@@ -313,15 +347,35 @@ namespace PaseoScreen
             return result;
         }
 
-        static byte[] Grab(Rectangle bounds, int maxWidth, double quality, out int width, out int height)
+        public static Bitmap BitmapOf(Rectangle bounds, IntPtr window)
         {
-            using (var full = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb))
-            {
-                using (var graphics = Graphics.FromImage(full))
-                {
-                    graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
+            var full = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format24bppRgb);
+            try {
+                using (var graphics = Graphics.FromImage(full)) {
+                    if (window == IntPtr.Zero) graphics.CopyFromScreen(bounds.Left, bounds.Top, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
+                    else {
+                        graphics.Clear(Color.FromArgb(22, 26, 30));
+                        Native.RECT rect;
+                        if (!Native.GetWindowRect(window, out rect) || rect.right <= rect.left || rect.bottom <= rect.top) throw new HelperError("Target window disappeared before capture");
+                        using (var app = new Bitmap(rect.right - rect.left, rect.bottom - rect.top, PixelFormat.Format24bppRgb)) {
+                            using (var ag = Graphics.FromImage(app)) {
+                                var dc = ag.GetHdc();
+                                try { if (!Native.PrintWindow(window, dc, 2)) throw new HelperError("This app does not support window capture"); }
+                                finally { ag.ReleaseHdc(dc); }
+                            }
+                            graphics.DrawImageUnscaled(app, rect.left - bounds.Left, rect.top - bounds.Top);
+                        }
+                    }
                     DrawCursor(graphics, bounds);
                 }
+                return full;
+            } catch { full.Dispose(); throw; }
+        }
+
+        static byte[] Grab(Rectangle bounds, int maxWidth, double quality, IntPtr window, out int width, out int height)
+        {
+            using (var full = BitmapOf(bounds, window))
+            {
                 double scale = Math.Min(1.0, (double)maxWidth / bounds.Width);
                 width = Math.Max(1, (int)(bounds.Width * scale));
                 height = Math.Max(1, (int)(bounds.Height * scale));
@@ -432,9 +486,20 @@ namespace PaseoScreen
         const int ScanCtrl = 0x1D, ScanAlt = 0x38, ScanShift = 0x2A, ScanWin = 0xE05B;
 
         static Point? lastPointer;
+        static readonly HashSet<int> heldKeys = new HashSet<int>();
+        static readonly HashSet<string> heldButtons = new HashSet<string>();
+        public static void ReleaseAll()
+        {
+            foreach (int scan in new List<int>(heldKeys)) { try { Key(scan, false); } catch { } }
+            foreach (string button in new List<string>(heldButtons)) {
+                try { Mouse(ButtonFlag(button, false), 0); heldButtons.Remove(button); } catch { }
+            }
+        }
 
         public static Dictionary<string, object> Handle(Dictionary<string, object> request)
         {
+            if (Native.SecureDesktopShowing()) throw new HelperError("Unlock the interactive desktop; secure desktop input is refused.");
+            if (Program.Has(request, "expectedWindow")) WindowsScene.CheckTarget(request);
             var displays = Displays.List();
             var display = Displays.Resolve(request.ContainsKey("display") ? request["display"] : null, displays);
             var events = request.ContainsKey("events") ? request["events"] as IList : null;
@@ -443,8 +508,10 @@ namespace PaseoScreen
             {
                 foreach (object item in events)
                 {
+                    if (Program.Has(request, "expectedWindow")) WindowsScene.CheckTarget(request);
                     var e = item as Dictionary<string, object>;
                     if (e == null) continue;
+                    if (Program.Has(request, "expectedWindow") && Program.Has(e, "x")) WindowsScene.CheckPoint(request, PointOf(e, display, displays));
                     Apply(e, display, displays);
                     handled++;
                 }
@@ -472,14 +539,14 @@ namespace PaseoScreen
                     {
                         string button = Button(e);
                         MoveTo(PointOf(e, display, displays));
-                        WithModifiers(modifiers, delegate { Mouse(ButtonFlag(button, true), 0); });
+                        WithModifiers(modifiers, delegate { Mouse(ButtonFlag(button, true), 0); heldButtons.Add(button); });
                         break;
                     }
                 case "up":
                     {
                         string button = Button(e);
                         MoveTo(PointOf(e, display, displays));
-                        WithModifiers(modifiers, delegate { Mouse(ButtonFlag(button, false), 0); });
+                        WithModifiers(modifiers, delegate { Mouse(ButtonFlag(button, false), 0); heldButtons.Remove(button); });
                         break;
                     }
                 case "click":
@@ -610,6 +677,7 @@ namespace PaseoScreen
             if (!down) flags |= Native.KEYEVENTF_KEYUP;
             input.u.ki.dwFlags = flags;
             Native.Send(input);
+            if (down) heldKeys.Add(scan); else heldKeys.Remove(scan);
         }
 
         static void WithModifiers(List<string> modifiers, ThreadStart body)
@@ -619,9 +687,9 @@ namespace PaseoScreen
             if (modifiers.Contains("alt")) held.Add(ScanAlt);
             if (modifiers.Contains("shift")) held.Add(ScanShift);
             if (modifiers.Contains("cmd")) held.Add(ScanWin);
-            foreach (int scan in held) Key(scan, true);
             try
             {
+                foreach (int scan in held) Key(scan, true);
                 body();
             }
             finally
@@ -711,6 +779,7 @@ namespace PaseoScreen
             result["changeCount"] = (long)Native.GetClipboardSequenceNumber();
             string text = Retry(delegate { return Clipboard.ContainsText() ? Clipboard.GetText() : null; });
             if (text != null) result["text"] = text;
+            result["nonText"] = text == null && Retry(delegate { return Clipboard.GetDataObject() == null || Clipboard.GetDataObject().GetFormats().Length == 0 ? "empty" : "data"; }) == "data";
             return result;
         }
 
@@ -739,6 +808,164 @@ namespace PaseoScreen
                     Thread.Sleep(30);
                 }
             }
+        }
+    }
+
+    static class WindowsScene
+    {
+        delegate bool EnumProc(IntPtr window, IntPtr data);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr data);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+        [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
+        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr window, int command);
+        [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(Native.POINT point);
+        [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
+
+        public static void CheckPoint(Dictionary<string, object> request, Point point)
+        {
+            var target = new IntPtr((long)Program.Num(request, "expectedWindow", 0)); Native.RECT rect;
+            var hit = WindowFromPoint(new Native.POINT { x = point.X, y = point.Y });
+            if (!Native.GetWindowRect(target, out rect) || point.X < rect.left || point.Y < rect.top || point.X >= rect.right || point.Y >= rect.bottom || GetAncestor(hit, 2) != target)
+                throw new HelperError("The pointer target is outside or covered by another window");
+        }
+
+        public static void CheckTarget(Dictionary<string, object> request)
+        {
+            var target = new IntPtr((long)Program.Num(request, "expectedWindow", 0));
+            uint pid; GetWindowThreadProcessId(target, out pid);
+            using (var process = Process.GetProcessById((int)pid)) {
+                if (Native.GetForegroundWindow() != target || !IsWindowVisible(target) ||
+                    !string.Equals(process.ProcessName + ".exe", Program.Str(request, "expectedApp"), StringComparison.OrdinalIgnoreCase))
+                    throw new HelperError("Target window changed before input; read it again");
+            }
+        }
+
+        public static Dictionary<string, object> Read()
+        {
+            var windows = new List<object>();
+            var displays = Displays.List();
+            EnumProc callback = delegate(IntPtr window, IntPtr data) {
+                if (!IsWindowVisible(window) || window == ControlNotice.WindowHandle) return true;
+                uint pid; GetWindowThreadProcessId(window, out pid);
+                Native.RECT rect;
+                var title = new StringBuilder(2048); GetWindowText(window, title, title.Capacity);
+                if (title.Length == 0 || !Native.GetWindowRect(window, out rect)) return true;
+                try {
+                    var process = Process.GetProcessById((int)pid);
+                    var display = Displays.Containing(new Point((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2), displays);
+                    windows.Add(new Dictionary<string, object> {
+                        { "id", window.ToInt64() }, { "app", process.ProcessName.ToLowerInvariant() + ".exe" },
+                        { "title", title.ToString() }, { "focused", Native.GetForegroundWindow() == window },
+                        { "minimized", IsIconic(window) }, { "display", display == null ? 0 : display.Id },
+                        { "x", rect.left }, { "y", rect.top }, { "width", rect.right - rect.left }, { "height", rect.bottom - rect.top }
+                    });
+                    process.Dispose();
+                } catch (ArgumentException) { } catch (System.ComponentModel.Win32Exception) { }
+                return true;
+            };
+            EnumWindows(callback, IntPtr.Zero); GC.KeepAlive(callback);
+            var list = new List<object>(); foreach (var display in displays) list.Add(display.Json());
+            return new Dictionary<string, object> { { "windows", windows }, { "displays", list }, { "locked", Native.SecureDesktopShowing() }, { "sessionId", Process.GetCurrentProcess().SessionId } };
+        }
+
+        public static Dictionary<string, object> Focus(Dictionary<string, object> request)
+        {
+            if (Native.SecureDesktopShowing()) throw new HelperError("Desktop locked or unavailable");
+            var window = new IntPtr((long)Program.Num(request, "window", 0));
+            uint pid; GetWindowThreadProcessId(window, out pid);
+            using (var process = Process.GetProcessById((int)pid)) {
+                if (!string.Equals(process.ProcessName + ".exe", Program.Str(request, "expectedApp"), StringComparison.OrdinalIgnoreCase)) throw new HelperError("The intended app/window changed before focus");
+            }
+            if (IsIconic(window)) ShowWindow(window, 9);
+            SetForegroundWindow(window);
+            return new Dictionary<string, object> { { "focused", Native.GetForegroundWindow() == window } };
+        }
+
+        public static Dictionary<string, object> Signature(Dictionary<string, object> request)
+        {
+            if (Native.SecureDesktopShowing()) throw new HelperError("Desktop locked or unavailable");
+            var display = Displays.Resolve(request["display"], Displays.List());
+            WindowsScene.CheckTarget(request);
+            using (var full = Capture.BitmapOf(display.Bounds, new IntPtr((long)Program.Num(request, "expectedWindow", 0))))
+            using (var small = new Bitmap(64, 40)) {
+                using (var g = Graphics.FromImage(small)) g.DrawImage(full, 0, 0, 64, 40);
+                var bytes = new byte[64 * 40];
+                for (int y = 0; y < 40; y++) for (int x = 0; x < 64; x++) {
+                    var c = small.GetPixel(x, y); bytes[y * 64 + x] = (byte)Math.Round(.299 * c.R + .587 * c.G + .114 * c.B);
+                }
+                return new Dictionary<string, object> { { "signature", Convert.ToBase64String(bytes) }, { "width", 64 }, { "height", 40 } };
+            }
+        }
+    }
+
+    class NoticeForm : Form
+    {
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override CreateParams CreateParams { get { var p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x80; return p; } }
+        protected override void WndProc(ref Message m) { if (m.Msg == 0x21) { m.Result = new IntPtr(3); return; } base.WndProc(ref m); }
+    }
+
+    static class ControlNotice
+    {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string className, string title);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+        static NoticeForm form;
+        static Label label;
+        static Thread thread;
+        static bool closing;
+        public static IntPtr WindowHandle;
+        static void Start()
+        {
+            if (form != null && !form.IsDisposed) return;
+            var ready = new ManualResetEvent(false);
+            thread = new Thread(delegate() {
+                form = new NoticeForm { Text = "Paseo Remote Control", FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false,
+                    TopMost = true, Font = new Font("Segoe UI", 9), AutoScaleMode = AutoScaleMode.None, Size = new Size(600, 74), BackColor = Color.FromArgb(24, 34, 39), StartPosition = FormStartPosition.Manual };
+                label = new Label { Location = new Point(16, 12), Size = new Size(324, 52), ForeColor = Color.White,
+                    Font = new Font("Segoe UI", 10), AutoEllipsis = true };
+                form.Controls.Add(label);
+                var take = new Button { Text = "Take over", Location = new Point(350, 20), Size = new Size(112, 34), BackColor = Color.FromArgb(118, 219, 192), ForeColor = Color.FromArgb(16, 34, 34), FlatStyle = FlatStyle.Flat };
+                var pause = new Button { Text = "Pause all", Location = new Point(474, 20), Size = new Size(110, 34), BackColor = form.BackColor, ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+                take.Click += delegate { Program.Reply(new Dictionary<string, object> { { "event", "control" }, { "action", "takeover" } }); };
+                pause.Click += delegate { Program.Reply(new Dictionary<string, object> { { "event", "control" }, { "action", "pause" } }); };
+                form.Controls.Add(take); form.Controls.Add(pause);
+                WindowHandle = form.Handle; ready.Set();
+                form.FormClosed += delegate { if (!closing) Program.Reply(new Dictionary<string, object> { { "event", "notice-lost" } }); };
+                Application.Run();
+            });
+            thread.IsBackground = true; thread.SetApartmentState(ApartmentState.STA); thread.Start();
+            if (!ready.WaitOne(3000)) throw new HelperError("Control notice could not start");
+        }
+
+        public static Dictionary<string, object> Update(Dictionary<string, object> request)
+        {
+            Start(); bool shown = false;
+            form.Invoke((MethodInvoker)delegate {
+                if (Program.Str(request, "mode") != "agent") { form.Hide(); return; }
+                if (Native.SecureDesktopShowing()) throw new HelperError("Control notice cannot be shown on a secure desktop");
+                string who = Program.Str(request, "label") ?? Program.Str(request, "agentId") ?? "Agent";
+                label.Text = "AGENT CONTROLLING  " + who + "\n" + (Program.Str(request, "tool") ?? "") + "  " + (Program.Str(request, "app") ?? "");
+                var area = Screen.FromPoint(Native.ForegroundWindowCenter()).WorkingArea;
+                form.Location = new Point(area.Right - form.Width - 16, area.Top + 16);
+                form.Show(); shown = form.Visible;
+            });
+            return new Dictionary<string, object> { { "shown", shown } };
+        }
+        public static void Stop() { closing = true; if (form != null && !form.IsDisposed) form.BeginInvoke((MethodInvoker)delegate { form.Close(); Application.ExitThread(); }); }
+        public static Dictionary<string, object> Location()
+        {
+            var window = FindWindow(null, "Paseo Remote Control"); Native.RECT rect;
+            var button = FindWindowEx(window, IntPtr.Zero, null, "Take over");
+            if (window == IntPtr.Zero || button == IntPtr.Zero || !IsWindowVisible(window) || !Native.GetWindowRect(button, out rect)) return new Dictionary<string, object> { { "visible", false } };
+            Native.RECT pauseRect;
+            var pause = FindWindowEx(window, IntPtr.Zero, null, "Pause all");
+            if (pause == IntPtr.Zero || !Native.GetWindowRect(pause, out pauseRect)) return new Dictionary<string, object> { { "visible", false } };
+            var cursor = new Native.CURSORINFO(); cursor.cbSize = Marshal.SizeOf(typeof(Native.CURSORINFO)); Native.GetCursorInfo(ref cursor);
+            return new Dictionary<string, object> { { "visible", true }, { "window", window.ToInt64() }, { "button", button.ToInt64() }, { "takeX", (rect.left + rect.right) / 2 }, { "takeY", (rect.top + rect.bottom) / 2 }, { "pauseX", (pauseRect.left + pauseRect.right) / 2 }, { "pauseY", (pauseRect.top + pauseRect.bottom) / 2 }, { "cursorX", cursor.ptScreenPos.x }, { "cursorY", cursor.ptScreenPos.y }, { "hit", WindowsScene.WindowFromPoint(cursor.ptScreenPos).ToInt64() } };
         }
     }
 
@@ -820,8 +1047,9 @@ namespace PaseoScreen
         [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr handle, int index, StringBuilder info, int length, out int needed);
         [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desktop);
-        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr window, out RECT rect);
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out RECT rect);
+        [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
         [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
         [DllImport("user32.dll")] static extern IntPtr SetProcessDpiAwarenessContext(IntPtr context);
         [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int value);
@@ -829,7 +1057,7 @@ namespace PaseoScreen
 
         public static void Send(INPUT input)
         {
-            SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT)));
+            if (SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT))) != 1) throw new HelperError("SendInput was refused (desktop or application integrity level). No elevation is attempted.");
         }
 
         /// Per-monitor DPI awareness makes monitor bounds, capture and input all use physical pixels.
@@ -865,7 +1093,7 @@ namespace PaseoScreen
                 var name = new StringBuilder(256);
                 int needed;
                 if (!GetUserObjectInformation(desktop, 2, name, name.Capacity * 2, out needed)) return false;
-                return !string.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
+                return Process.GetCurrentProcess().SessionId == 0 || !string.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
             }
             finally
             {

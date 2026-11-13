@@ -17,6 +17,7 @@ if (!socketPath) {
 
 const hello = {
   hello: {
+    authToken: process.env.PASEO_CU_AUTH,
     clientId: getArg("--client") ?? "",
     provider: getArg("--provider") ?? "",
     agentId: process.env.PASEO_AGENT_ID ?? null,
@@ -57,6 +58,7 @@ export interface InstallShimOptions {
   socketPath?: string;
   compiledBinaryPath?: string;
   binaryName?: string;
+  authToken?: string;
 }
 
 export interface InstalledShimResult {
@@ -88,8 +90,10 @@ export function installMcpShim(options: InstallShimOptions): InstalledShimResult
 
   const shimMjsPath = path.join(binDir, "paseo-computer-use-shim.mjs");
   const tmpMjsPath = `${shimMjsPath}.tmp.${process.pid}.${Date.now()}`;
-  writeFileSync(tmpMjsPath, NODE_MCP_SHIM_SOURCE, "utf8");
+  writeFileSync(tmpMjsPath, (options.authToken ? `process.env.PASEO_CU_AUTH = ${JSON.stringify(options.authToken)};\n` : "") + NODE_MCP_SHIM_SOURCE, { encoding: "utf8", mode: 0o600 });
   renameSync(tmpMjsPath, shimMjsPath);
+
+  if (process.platform === "win32") return { shimPath: shimMjsPath, mode: "node-fallback" };
 
   const defaultSocketArg = options.socketPath ? ` --socket ${shellQuote(options.socketPath)}` : "";
   const nativeBin = options.compiledBinaryPath ? shellQuote(options.compiledBinaryPath) : null;

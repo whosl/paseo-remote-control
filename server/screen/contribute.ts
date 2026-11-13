@@ -6,13 +6,14 @@ import type { ControlCoordinator } from "../control/coordinator";
 import { readPreferredDisplay, writePreferredDisplay } from "./preferences";
 import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, requestPermissionsRpc, statusRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
 
-export default function contribute(server: PluginServerContext, control: ControlCoordinator, niri?: NiriHelper) {
+type ScreenHelper = Pick<HelperProcess, "request" | "stop">;
+export default function contribute(server: PluginServerContext, control: ControlCoordinator, niri?: NiriHelper, helpers?: { capture: ScreenHelper; input: ScreenHelper }) {
   const log = (message: string) => console.error(`[paseo-screen] ${message}`);
   // Separate processes so clicks and keys never queue behind a frame capture. On Wayland each
   // process would need its own portal session and approval, so one helper serves both and answers
   // frames on a thread of their own.
-  const capture = new HelperProcess(log, niri);
-  const input = new HelperProcess(log, niri);
+  const capture = helpers?.capture ?? new HelperProcess(log, niri);
+  const input = helpers?.input ?? new HelperProcess(log, niri);
   const inputHelper = async () => (process.platform === "linux" && (await linuxBackend()) === "wayland" ? capture : input);
 
   async function readStatus(command: "status" | "request"): Promise<ScreenStatus> {

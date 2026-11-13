@@ -65,6 +65,7 @@ export interface CreateComputerUseServiceDeps {
   helperPort: HelperPort;
   target?: "mac" | "linux" | "windows";
   socketPath?: string;
+  socketAuthToken?: string;
   platformSupported?: boolean;
   idleLockTimeoutMs?: number;
   postActionSleepMs?: number;
@@ -195,7 +196,7 @@ export function createComputerUseService(
 
   const controlLock = new ControlLock({
     helperPort: deps.helperPort,
-    requireAbortTap: deps.target !== "linux",
+    requireAbortTap: deps.target !== "linux" && deps.target !== "windows",
     idleTimeoutMs,
     onOwnerChanged: (owner) => {
       if (owner.callerId === null) {
@@ -305,7 +306,7 @@ export function createComputerUseService(
         isInputMethod = helperStatus.isInputMethod;
       } catch (error) {
         // Helper not running or unreachable; report default false flags
-        if (deps.target === "linux") {
+        if (deps.target === "linux" || deps.target === "windows") {
           buildStatus.state = "failed";
           buildStatus.error = error instanceof Error ? error.message : String(error);
         }
@@ -360,6 +361,7 @@ export function createComputerUseService(
   const socketListener = deps.socketPath
     ? new ComputerUseSocketListener({
         socketPath: deps.socketPath,
+        authToken: deps.socketAuthToken,
         createServerForClient: createMcpServer,
         onClientClosed,
       })

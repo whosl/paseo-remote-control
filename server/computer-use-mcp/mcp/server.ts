@@ -7,6 +7,8 @@ import {
 } from "./tools";
 import { callFocusWindow, focusDescriptor, LINUX_INSTRUCTIONS, LINUX_TOOL_NAMES, linuxDescriptor } from "../linux/mcp";
 
+import { WINDOWS_INSTRUCTIONS, windowsDescriptor, windowsFocusDescriptor } from "../windows/mcp";
+
 export interface JsonRpcRequest {
   jsonrpc: "2.0";
   id?: number | string | null;
@@ -114,7 +116,7 @@ export class ComputerUseMcpServer {
             name: this.serverName,
             version: this.serverVersion,
           },
-          instructions: this.tools.driver.target === "linux" ? LINUX_INSTRUCTIONS : SERVER_INSTRUCTIONS,
+          instructions: this.tools.driver.target === "windows" ? WINDOWS_INSTRUCTIONS : this.tools.driver.target === "linux" ? LINUX_INSTRUCTIONS : SERVER_INSTRUCTIONS,
         },
       };
     }
@@ -132,8 +134,8 @@ export class ComputerUseMcpServer {
         jsonrpc: "2.0",
         id,
         result: {
-          tools: this.tools.driver.target === "linux"
-            ? [...COMPUTER_USE_TOOLS.filter(t => LINUX_TOOL_NAMES.has(t.name)).map(linuxDescriptor), focusDescriptor]
+          tools: this.tools.driver.target !== "mac"
+            ? [...COMPUTER_USE_TOOLS.filter(t => LINUX_TOOL_NAMES.has(t.name)).map(this.tools.driver.target === "windows" ? windowsDescriptor : linuxDescriptor), this.tools.driver.target === "windows" ? windowsFocusDescriptor : focusDescriptor]
             : COMPUTER_USE_TOOLS,
         },
       };
@@ -141,18 +143,18 @@ export class ComputerUseMcpServer {
 
     if (method === "tools/call") {
       const toolName = typeof params.name === "string" ? params.name : "";
-      if (this.tools.driver.target === "linux" && params.arguments && typeof params.arguments === "object") {
+      if (this.tools.driver.target !== "mac" && params.arguments && typeof params.arguments === "object") {
         const args = params.arguments as Record<string, unknown>;
         const unsupported = "element_index" in args || "query" in args || "include_menus" in args ||
           (toolName === "wait_for" && Array.isArray(args.any) && args.any.some(condition =>
             condition && typeof condition === "object" && ["appears", "disappears", "state", "value", "stable"].some(key => key in condition)));
-        if (unsupported) return { jsonrpc: "2.0", id, result: toolErrorResult("invalid_arguments", "Niri is visual-only: use coordinates or visual/window wait conditions, not accessibility elements.") };
+        if (unsupported) return { jsonrpc: "2.0", id, result: toolErrorResult("invalid_arguments", "This backend is visual-only: use coordinates or visual/window wait conditions, not accessibility elements.") };
       }
-      if (this.tools.driver.target === "linux" && toolName === "focus_window") {
+      if (this.tools.driver.target !== "mac" && toolName === "focus_window") {
         return { jsonrpc: "2.0", id, result: await callFocusWindow(params.arguments, this.tools) };
       }
-      if (this.tools.driver.target === "linux" && !LINUX_TOOL_NAMES.has(toolName)) {
-        return { jsonrpc: "2.0", id, error: { code: -32602, message: `Unsupported Niri tool: ${toolName}` } };
+      if (this.tools.driver.target !== "mac" && !LINUX_TOOL_NAMES.has(toolName)) {
+        return { jsonrpc: "2.0", id, error: { code: -32602, message: `Unsupported visual tool: ${toolName}` } };
       }
       const tool = findComputerUseTool(toolName);
       if (!tool) {
