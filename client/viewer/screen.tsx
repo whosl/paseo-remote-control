@@ -217,6 +217,19 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
                 {item.id === display?.id ? <Icon name="Check" size={18} color={theme.colors.accent} /> : null}
               </Pressable>)}
             </> : panel === "settings" ? <>
+              <Text style={styles.sectionLabel}>{t("qualitySection")}</Text>
+              <View style={styles.qualityRow}>{QUALITIES.map((quality, index) => <Pressable key={quality.label} accessibilityRole="button" accessibilityLabel={t("qualityLabel", { quality: t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!) })} accessibilityState={{ selected: index === qualityIndex }} onPress={() => setQualityIndex(index)} style={[styles.quality, index === qualityIndex && styles.selectedRow]}><Text style={styles.rowTitle}>{t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!)}</Text><Text style={styles.description}>{[t("lessData"), t("everyday"), t("moreDetail")][index]}</Text></Pressable>)}</View>
+              <View style={styles.rule} />
+              <Text style={styles.sectionLabel}>{t("inputSection")}</Text>
+              <View style={styles.qualityRow}>{(["touchscreen", "trackpad"] as InputMode[]).map((mode) => <Pressable key={mode} accessibilityRole="button" accessibilityLabel={t("selectInputMode", { mode: mode === "trackpad" ? t("trackpad") : t("touchscreen") })} accessibilityState={{ selected: inputMode === mode }} onPress={() => setInputMode(mode)} style={[styles.quality, inputMode === mode && styles.selectedRow]}><Icon name={mode === "trackpad" ? "Touchpad" : "Hand"} size={18} color={theme.colors.foreground} /><Text style={styles.rowTitle}>{mode === "trackpad" ? t("trackpad") : t("touchscreen")}</Text></Pressable>)}</View>
+              <Text style={styles.description}>{inputMode === "trackpad" ? t("trackpadDescription") : t("touchscreenDescription")}</Text>
+              <Action styles={styles} label={feedbackEnabled ? t("hapticsOn") : t("hapticsOff")} onPress={() => setFeedbackEnabled(!feedbackEnabled)} />
+              <Text style={styles.description}>{t("hapticsHint")}</Text>
+              <View style={styles.rule} />
+              <Text style={styles.sectionLabel}>{t("ownershipNotice")}</Text>
+              <Text style={styles.description}>{t("ownerHint", { owner: localizeRemoteText(ownership.state?.label, t) ?? t("connectingEllipsis") })}</Text>
+              <Action styles={styles} label={ownership.changing ? t("switchingControl") : t("takeControlStopAgents")} disabled={ownership.changing} onPress={ownership.takeOver} />
+              <View style={styles.rule} />
               {hostPlatform === "win32" ? <>
                 <Text style={styles.sectionLabel}>{t("windowsHeadless")}</Text>
                 <Text style={styles.description}>{t("fallbackHint")}</Text>
@@ -231,16 +244,6 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
                 {status.data?.windowsTopology?.error ? <Text selectable style={styles.description}>{status.data.windowsTopology.error}</Text> : null}
                 <View style={styles.rule} />
               </> : null}
-              <Text style={styles.sectionLabel}>{t("inputSection")}</Text>
-              <Text style={styles.description}>{t("ownerHint", { owner: localizeRemoteText(ownership.state?.label, t) ?? t("connectingEllipsis") })}</Text>
-              <Action styles={styles} label={ownership.changing ? t("switchingControl") : t("takeControlStopAgents")} disabled={ownership.changing} onPress={ownership.takeOver} />
-              <View style={styles.qualityRow}>{(["touchscreen", "trackpad"] as InputMode[]).map((mode) => <Pressable key={mode} accessibilityRole="button" accessibilityLabel={t("selectInputMode", { mode: mode === "trackpad" ? t("trackpad") : t("touchscreen") })} accessibilityState={{ selected: inputMode === mode }} onPress={() => setInputMode(mode)} style={[styles.quality, inputMode === mode && styles.selectedRow]}><Icon name={mode === "trackpad" ? "Touchpad" : "Hand"} size={18} color={theme.colors.foreground} /><Text style={styles.rowTitle}>{mode === "trackpad" ? t("trackpad") : t("touchscreen")}</Text></Pressable>)}</View>
-              <Text style={styles.description}>{inputMode === "trackpad" ? t("trackpadDescription") : t("touchscreenDescription")}</Text>
-              <Action styles={styles} label={feedbackEnabled ? t("hapticsOn") : t("hapticsOff")} onPress={() => setFeedbackEnabled(!feedbackEnabled)} />
-              <Text style={styles.description}>{t("hapticsHint")}</Text>
-              <View style={styles.rule} />
-              <Text style={styles.sectionLabel}>{t("qualitySection")}</Text>
-              <View style={styles.qualityRow}>{QUALITIES.map((quality, index) => <Pressable key={quality.label} accessibilityRole="button" accessibilityLabel={t("qualityLabel", { quality: t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!) })} accessibilityState={{ selected: index === qualityIndex }} onPress={() => setQualityIndex(index)} style={[styles.quality, index === qualityIndex && styles.selectedRow]}><Text style={styles.rowTitle}>{t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!)}</Text><Text style={styles.description}>{[t("lessData"), t("everyday"), t("moreDetail")][index]}</Text></Pressable>)}</View>
               <Text style={styles.sectionLabel}>{t("liveConnection")}</Text>
               <View style={styles.metrics}><Metric label={direct.active ? t("videoFps") : t("updatesPerSecond")} value={paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1)} styles={styles} /><Metric label={t("roundTrip")} value={direct.active && direct.rttMs === null ? "—" : `${direct.active ? direct.rttMs : frames.latencyMs} ms`} styles={styles} /><Metric label={direct.active ? t("videoRate") : t("frame")} value={direct.active ? `${direct.kbps} kbps` : `${frames.kilobytes} KB`} styles={styles} /></View>
               <View style={styles.transport}><View style={[styles.dot, { backgroundColor: direct.active ? theme.colors.accent : theme.colors.foregroundMuted }]} /><Text style={styles.rowTitle}>{direct.active ? t("encryptedVideo") : direct.connecting ? t("connectingVideo") : t("paseoFrames")}</Text></View>
