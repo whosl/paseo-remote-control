@@ -29,6 +29,16 @@ This controls a real computer, not a sandbox. Agents can move focus, type into
 apps and affect the user's files. Only install it on computers you own or are
 explicitly authorized to administer.
 
+## Language
+
+Remote Control follows the language selected in the presenting Paseo app. Chinese
+locales use the Chinese interface; all other languages fall back to English.
+Changing the app language updates the viewer, navigation, settings and known status
+messages without resetting clipboard drafts, picture quality or control state.
+There is no separate plugin language setting. Device/app names, keyboard shortcut
+names and unknown backend diagnostics remain unchanged. Native host control notices
+are host-side safety UI and currently retain their English labels.
+
 ## Compatibility
 
 Requires Paseo daemon and client **0.13 or later**, and Node **22.18 or later** for

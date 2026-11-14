@@ -3,6 +3,7 @@ import { Text } from "react-native";
 import {
   useRpc,
   useSettings,
+  useTranslation,
   type PluginSurfaceProps,
   type SettingsState,
 } from "@getpaseo/plugin/client";
@@ -27,38 +28,21 @@ import {
   parseBundleIdList,
   toggleProvider,
 } from "../shared/settings";
-
-const ENABLE_WARNING =
-  "Computer Use lets agents see and control apps on this host as you. " +
-  "Use Paseo's Stop button to take control back. Linux/Niri changes real focus and " +
-  "captures the whole target display; its global Escape hook and accessibility tree are unavailable.";
-
-const BUILTIN_BLOCK_HINT =
-  "Keychain Access, Passwords, the login window, the system password prompt, and the " +
-  "1Password, Bitwarden, Dashlane, LastPass, NordPass, and Proton Pass apps are always " +
-  "blocked. Linux also blocks KeePassXC and Seahorse. Add macOS bundle ids or exact " +
-  "Linux app ids here, separated by commas or new lines.";
-
-const BROWSER_HINT = "Off: agents use Paseo's browser tools for the web.";
-
-const screenshotOptions = [
-  { label: "Auto (AX first; screenshot on request or for a sparse tree)", value: "auto" },
-  { label: "Always include screenshot", value: "always" },
-  { label: "AX tree only (no screenshot sent to the agent)", value: "never" },
-] as const;
+import { settingsMessages } from "./settings-messages";
 
 type ReadySettings = Extract<
   SettingsState<typeof computerUseSettings.schema>,
   { status: "ready" }
 >;
 
-function grantedLabel(status: ComputerUseStatusOutput | null, granted: boolean): string {
-  if (!status) return "Checking";
-  if (status.helperBuildState !== "ready") return "Unknown until the helper is built";
-  return granted ? "Granted" : "Missing";
+function grantedLabelKey(status: ComputerUseStatusOutput | null, granted: boolean) {
+  if (!status) return "permissions.checking";
+  if (status.helperBuildState !== "ready") return "permissions.unknown";
+  return granted ? "permissions.granted" : "permissions.missing";
 }
 
 function BlockedAppsEditor({ settings }: { settings: ReadySettings }) {
+  const { t } = useTranslation(settingsMessages);
   // The draft owns only the text. The save merges it into the current
   // values at the current revision, so a provider or enable change made
   // while the user types is neither lost nor reported as a conflict. A
@@ -74,17 +58,17 @@ function BlockedAppsEditor({ settings }: { settings: ReadySettings }) {
   return (
     <SettingsCard>
       <SettingsInput
-        label="Extra blocked apps"
-        hint={BUILTIN_BLOCK_HINT}
+        label={t("blockedApps.label")}
+        hint={t("blockedApps.hint")}
         initialValue={draft}
-        placeholder="com.example.Bank"
+        placeholder={t("blockedApps.placeholder")}
         onChangeText={setDraft}
         disabled={settings.saving}
         error={settings.saveError}
       />
       <SettingsAction
-        label={`${settings.values.extraBlockedBundleIds.length} extra blocked`}
-        actionLabel="Save blocked apps"
+        label={t("blockedApps.count", { count: settings.values.extraBlockedBundleIds.length })}
+        actionLabel={t("blockedApps.save")}
         disabled={settings.saving}
         onPress={save}
       />
@@ -99,6 +83,7 @@ function SettingsControls({
   settings: ReadySettings;
   theme: PluginSurfaceProps["theme"];
 }) {
+  const { t } = useTranslation(settingsMessages);
   const getStatus = useRpc(statusGetRpc);
   const openPermissions = useRpc(permissionsOpenRpc);
   const stopControl = useRpc(controlStopRpc);
@@ -173,32 +158,33 @@ function SettingsControls({
   const helperState = status?.helperBuildState ?? "checking";
   const linux = status?.platform === "linux" || status?.platform === "windows";
   const windows = status?.platform === "windows";
+  const screenshotOptions = [
+    { label: t(linux ? "screenshots.autoVisual" : "screenshots.autoAx"), value: "auto" },
+    { label: t("screenshots.always"), value: "always" },
+    { label: t(linux ? "screenshots.neverVisual" : "screenshots.neverAx"), value: "never" },
+  ] as const;
 
   return (
-    <SettingsSection title="Computer Use">
+    <SettingsSection title={t("title")}>
       <SettingsCard>
         <SettingsSwitch
-          label="Enable Computer Use"
-          hint={ENABLE_WARNING}
+          label={t("enable")}
+          hint={t("enableHint")}
           value={settings.values.enabled}
           disabled={settings.saving}
           onValueChange={onToggleEnabled}
         />
         <SettingsSwitch
-          label="Allow Computer Use in web browsers"
-          hint={BROWSER_HINT}
+          label={t("allowBrowserApps")}
+          hint={t("browserHint")}
           value={settings.values.allowBrowserApps}
           disabled={settings.saving}
           onValueChange={onToggleBrowserApps}
         />
         <SettingsSelect
-          label="Screenshot mode"
+          label={t("screenshots.label")}
           value={settings.values.screenshots}
-          options={linux ? [
-            { label: "Auto (visual screenshots)", value: "auto" },
-            { label: "Always include screenshot", value: "always" },
-            { label: "Do not send screenshots", value: "never" },
-          ] : screenshotOptions}
+          options={screenshotOptions}
           disabled={settings.saving}
           onValueChange={onChangeScreenshots}
         />
@@ -206,37 +192,55 @@ function SettingsControls({
 
       {linux ? (
         <SettingsCard>
-          <SettingsRow label={windows ? "Windows visual backend" : "Linux/Niri visual backend"} hint={windows ? "Uses real desktop focus and physical display coordinates. Only the target window is rendered for the agent; other apps stay blank. There are no indexed controls or global Escape/shake hook." : "Uses real desktop focus and display coordinates. Screenshots include other visible windows. There are no indexed controls, background input, or global Escape/shake hook."} />
-          <SettingsRow label="Capture / input" hint={windows ? "Requires this user logged in to an unlocked Windows desktop. UAC, lock screens and elevated apps are not bypassed. Use Take over, Pause all or Paseo Stop." : "Requires an unlocked Niri session, grim, wayvnc and wl-clipboard. Use Paseo Stop or disable Computer Use to stop an agent."} />
-          <SettingsRow label="Backend" error={status?.helperBuildError ?? null}>
-            <Text style={textStyle}>{helperState}</Text>
+          <SettingsRow
+            label={t(windows ? "backend.windowsTitle" : "backend.linuxTitle")}
+            hint={t(windows ? "backend.windowsHint" : "backend.linuxHint")}
+          />
+          <SettingsRow
+            label={t("backend.captureInput")}
+            hint={t(windows ? "backend.windowsCaptureHint" : "backend.linuxCaptureHint")}
+          />
+          <SettingsRow label={t("backend.label")} error={status?.helperBuildError ?? null}>
+            <Text style={textStyle}>{t(`helperState.${helperState}`)}</Text>
           </SettingsRow>
-          {status?.socketError ? <SettingsRow label="Agent connection" error={status.socketError} /> : null}
-          {status?.activeOwner ? <SettingsAction label={`In control: ${status.activeAgentId ?? status.activeOwner}`} actionLabel="Stop" onPress={handleStop} /> : null}
+          {status?.socketError ? (
+            <SettingsRow label={t("backend.agentConnection")} error={status.socketError} />
+          ) : null}
+          {status?.activeOwner ? (
+            <SettingsAction
+              label={t("inControl", { owner: status.activeAgentId ?? status.activeOwner })}
+              actionLabel={t("stop")}
+              onPress={handleStop}
+            />
+          ) : null}
         </SettingsCard>
       ) : <SettingsCard>
         <SettingsAction
-          label={`Accessibility: ${grantedLabel(status, status?.axTrusted ?? false)}`}
-          hint="Grant it to the app that started the Paseo daemon, then quit and reopen that app."
-          actionLabel="Open System Settings"
+          label={t("permissions.accessibility", {
+            status: t(grantedLabelKey(status, status?.axTrusted ?? false)),
+          })}
+          hint={t("permissions.accessibilityHint")}
+          actionLabel={t("permissions.openSettings")}
           onPress={openAccessibility}
         />
         <SettingsAction
-          label={`Screen Recording: ${grantedLabel(status, status?.screenCaptureGranted ?? false)}`}
-          hint="Needed for screenshots. Quit and reopen the app after you grant it."
-          actionLabel="Open System Settings"
+          label={t("permissions.screenRecording", {
+            status: t(grantedLabelKey(status, status?.screenCaptureGranted ?? false)),
+          })}
+          hint={t("permissions.screenRecordingHint")}
+          actionLabel={t("permissions.openSettings")}
           onPress={openScreenRecording}
         />
-        <SettingsRow label="Helper build" error={status?.helperBuildError ?? null}>
-          <Text style={textStyle}>{helperState}</Text>
+        <SettingsRow label={t("backend.helperBuild")} error={status?.helperBuildError ?? null}>
+          <Text style={textStyle}>{t(`helperState.${helperState}`)}</Text>
         </SettingsRow>
         {status?.socketError ? (
-          <SettingsRow label="Agent connection" error={status.socketError} />
+          <SettingsRow label={t("backend.agentConnection")} error={status.socketError} />
         ) : null}
         {status?.activeOwner ? (
           <SettingsAction
-            label={`In control: ${status.activeAgentId ?? status.activeOwner}`}
-            actionLabel="Stop"
+            label={t("inControl", { owner: status.activeAgentId ?? status.activeOwner })}
+            actionLabel={t("stop")}
             onPress={handleStop}
           />
         ) : null}
@@ -246,7 +250,7 @@ function SettingsControls({
         {SUPPORTED_PROVIDERS.map((provider) => (
           <SettingsSwitch
             key={provider.id}
-            label={`Give ${provider.label} agents computer use`}
+            label={t("providerAccess", { provider: provider.label })}
             value={settings.values.injectProviders.includes(provider.id)}
             disabled={settings.saving}
             onValueChange={(enabled) => onToggleProvider(provider.id, enabled)}
@@ -265,21 +269,22 @@ function SettingsControls({
 }
 
 export function ComputerUseSettingsScreen({ theme }: PluginSurfaceProps) {
+  const { t } = useTranslation(settingsMessages);
   const settings = useSettings(computerUseSettings);
   const style = useMemo(() => ({ color: theme.colors.foreground }), [theme]);
 
   if (settings.status === "loading") {
-    return <Text style={style}>Loading Computer Use settings…</Text>;
+    return <Text style={style}>{t("loading")}</Text>;
   }
   if (settings.status !== "ready") {
     return (
-      <SettingsSection title="Computer Use">
+      <SettingsSection title={t("title")}>
         <Text style={style}>{settings.error}</Text>
-        <SettingsAction label="Try again" actionLabel="Reload" onPress={settings.reload} />
+        <SettingsAction label={t("tryAgain")} actionLabel={t("reload")} onPress={settings.reload} />
         {settings.status === "invalid" ? (
           <SettingsAction
-            label="Restore default settings"
-            actionLabel="Reset"
+            label={t("restoreDefaults")}
+            actionLabel={t("reset")}
             onPress={settings.reset}
           />
         ) : null}

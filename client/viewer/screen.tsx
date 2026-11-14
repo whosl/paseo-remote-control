@@ -17,6 +17,7 @@ import { QUALITIES, useFrames, useInputQueue } from "./use-screen";
 import { useDirectVideo, useFullscreen } from "./web";
 import { useWebInput } from "./web-input";
 import { useOwnership } from "../ownership";
+import { localizeRemoteText, useRemoteTranslation, type RemoteTranslate } from "../messages";
 
 const isWeb = Platform.OS === "web";
 type Panel = "displays" | "settings" | "clipboard";
@@ -27,6 +28,7 @@ export function RemoteScreen(props: PluginScreenProps) {
 }
 
 function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled }: PluginScreenProps & { feedbackEnabled: boolean; setFeedbackEnabled(value: boolean): void }) {
+  const { t } = useRemoteTranslation();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const queryClient = useQueryClient();
   const fetchStatus = useRpc(statusRpc);
@@ -122,129 +124,129 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const compact = layout.compact || (stage.width > 0 && stage.width < 700) || short;
   const tiny = stage.width > 0 && stage.width < 350;
   const toggleFullscreen = () => { void fullscreen.toggle().catch((error) => setInputError(`Fullscreen: ${String(error)}`)); };
-  const message = inputError ?? ownership.error ?? (direct.active ? null : frames.error) ?? clipboard.message;
+  const message = localizeRemoteText(inputError ?? ownership.error ?? (direct.active ? null : frames.error) ?? clipboard.message, t);
   const permissionMissing = !!status.data && (!status.data.supported || !!status.data.error || !status.data.screenRecording || !status.data.accessibility);
 
   return (
     <View ref={setRootNode} style={styles.screen}>
       {fallback?.state === "return-available" ? <View accessibilityLiveRegion="polite" style={styles.fallbackBanner}>
         <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-          <Text style={styles.rowTitle}>Physical display reconnected</Text>
-          <Text style={styles.description}>Keep using the virtual display, or switch back when ready.</Text>
-          {fallbackChange.error ? <Text style={styles.description}>{fallbackChange.error.message}</Text> : null}
+          <Text style={styles.rowTitle}>{t("physicalReconnected")}</Text>
+          <Text style={styles.description}>{t("physicalReconnectedHint")}</Text>
+          {fallbackChange.error ? <Text style={styles.description}>{localizeRemoteText(fallbackChange.error.message, t)}</Text> : null}
         </View>
-        <Action styles={styles} label={fallbackChange.isPending ? "Switching…" : "Switch back"} disabled={fallbackChange.isPending || fallback.returnDisplay === null} onPress={() => fallbackChange.mutate("return-physical")} />
+        <Action styles={styles} label={fallbackChange.isPending ? t("switching") : t("switchBack")} disabled={fallbackChange.isPending || fallback.returnDisplay === null} onPress={() => fallbackChange.mutate("return-physical")} />
       </View> : null}
       <View style={styles.viewport} onLayout={(event: LayoutChangeEvent) => setStage(event.nativeEvent.layout)}>
         <View style={styles.picture}>
           {frames.uri ? <TouchStage uri={paused && direct.still ? direct.still : frames.uri} stage={stage} content={content} rotated={!isWeb && rotated} controlling={controlling} mode={inputMode} send={send} onZoomChange={setZoom} onPictureNode={setViewNode} onVideoNode={setVideoNode} />
           : <View style={styles.empty}>
               <Icon name="Monitor" size={32} color={chrome.muted} />
-              <Text style={styles.emptyTitle}>{status.isLoading ? "Connecting to your computer" : canCapture ? "Starting the screen" : "Your screen will appear here"}</Text>
-              <Text style={styles.hint}>A private view of {host.label}</Text>
+              <Text style={styles.emptyTitle}>{status.isLoading ? t("connectingComputer") : canCapture ? t("startingScreen") : t("screenWillAppear")}</Text>
+              <Text style={styles.hint}>{t("privateView", { host: host.label })}</Text>
             </View>}
         </View>
 
         {ownership.state?.mode === "agent" || ownership.state?.humanPriority ? <View style={{ position: "absolute", top: minimal ? 16 : short ? 62 : 82, left: 12, right: 12, alignItems: "center", zIndex: 20 }} pointerEvents="box-none">
-          <View accessibilityLabel="Control ownership notice" style={{ maxWidth: 620, width: "100%", flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "rgba(20,34,44,0.97)", borderColor: ownership.state.mode === "agent" ? chrome.blue : chrome.green, borderWidth: 1, borderRadius: 13, padding: 12 }}>
+          <View accessibilityLabel={t("ownershipNotice")} style={{ maxWidth: 620, width: "100%", flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "rgba(20,34,44,0.97)", borderColor: ownership.state.mode === "agent" ? chrome.blue : chrome.green, borderWidth: 1, borderRadius: 13, padding: 12 }}>
             <Icon name={ownership.state.mode === "agent" ? "Bot" : "UserRound"} size={20} color={chrome.blue} />
-            <View style={{ flex: 1, minWidth: 0, gap: 3 }}><Text style={{ color: chrome.text, fontSize: 13, fontWeight: "600" }}>{ownership.state.mode === "agent" ? `${ownership.state.label} is controlling` : ownership.state.paused ? "All remote input is paused" : "You have control"}</Text><Text numberOfLines={2} style={{ color: chrome.muted, fontSize: 11 }}>{ownership.state.mode === "agent" ? [ownership.state.app, ownership.state.tool, "Watching live"].filter(Boolean).join(" · ") : "Agents cannot act until you allow them again."}</Text></View>
-            <Pressable accessibilityRole="button" accessibilityLabel={ownership.state.mode === "agent" ? "Take over from agent" : "Allow agents to control"} disabled={ownership.changing || ownership.state.paused} onPress={ownership.state.mode === "agent" ? ownership.takeOver : ownership.allowAgents} style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: chrome.blue, opacity: ownership.changing || ownership.state.paused ? 0.45 : 1 }}><Text style={{ color: "#11232e", fontSize: 12, fontWeight: "600" }}>{ownership.changing ? "Switching…" : ownership.state.mode === "agent" ? "Take over" : "Allow agents"}</Text></Pressable>
+            <View style={{ flex: 1, minWidth: 0, gap: 3 }}><Text style={{ color: chrome.text, fontSize: 13, fontWeight: "600" }}>{ownership.state.mode === "agent" ? t("agentControlling", { agent: localizeRemoteText(ownership.state.label, t) }) : ownership.state.paused ? t("allRemoteInputPaused") : t("youHaveControl")}</Text><Text numberOfLines={2} style={{ color: chrome.muted, fontSize: 11 }}>{ownership.state.mode === "agent" ? [ownership.state.app, ownership.state.tool, t("watchingLive")].filter(Boolean).join(" · ") : t("agentsBlocked")}</Text></View>
+            <Pressable accessibilityRole="button" accessibilityLabel={ownership.state.mode === "agent" ? t("takeOverAgent") : t("allowAgentControl")} disabled={ownership.changing || ownership.state.paused} onPress={ownership.state.mode === "agent" ? ownership.takeOver : ownership.allowAgents} style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: chrome.blue, opacity: ownership.changing || ownership.state.paused ? 0.45 : 1 }}><Text style={{ color: "#11232e", fontSize: 12, fontWeight: "600" }}>{ownership.changing ? t("switching") : ownership.state.mode === "agent" ? t("takeOver") : t("allowAgents")}</Text></Pressable>
           </View>
         </View> : null}
 
         {!minimal ? <>
           <View pointerEvents="box-none" style={[styles.top, { top: short ? 10 : 20, left: compact ? 12 : 24, right: compact ? 12 : 24, gap: tiny ? 4 : 8 }]}>
             <View pointerEvents="box-none" style={styles.side}>
-              {compact ? <Control small={tiny} icon="Monitor" label={`Connected to ${host.label}`} onPress={() => togglePanel("displays")} /> :
-                <Pressable accessibilityRole="button" accessibilityLabel="Choose display" onPress={() => togglePanel("displays")} style={styles.hostPill}>
-                  <Icon name="Monitor" size={18} color={chrome.muted} /><View><Text style={styles.hostName} numberOfLines={1}>{host.label}</Text><Text style={styles.eyebrow}>REMOTE SCREEN</Text></View>
+              {compact ? <Control small={tiny} icon="Monitor" label={t("connectedHost", { host: host.label })} onPress={() => togglePanel("displays")} /> :
+                <Pressable accessibilityRole="button" accessibilityLabel={t("chooseDisplay")} onPress={() => togglePanel("displays")} style={styles.hostPill}>
+                  <Icon name="Monitor" size={18} color={chrome.muted} /><View><Text style={styles.hostName} numberOfLines={1}>{host.label}</Text><Text style={styles.eyebrow}>{t("remoteScreenEyebrow")}</Text></View>
                 </Pressable>}
             </View>
-            <Pressable accessibilityRole="button" accessibilityLabel="Display selector" onPress={() => togglePanel("displays")} style={styles.resolution}>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("displaySelector")} onPress={() => togglePanel("displays")} style={styles.resolution}>
               <View style={[styles.dot, { backgroundColor: paused || frames.asleep ? chrome.muted : frames.error && !direct.active ? theme.colors.statusWarning : chrome.blue }]} />
-              <Text style={styles.resolutionText}>{display ? `${display.pixelWidth} × ${display.pixelHeight}` : "Connecting"}</Text>
+              <Text style={styles.resolutionText}>{display ? `${display.pixelWidth} × ${display.pixelHeight}` : t("connecting")}</Text>
               <Icon name="ChevronDown" size={13} color={chrome.muted} />
             </Pressable>
             <View pointerEvents="box-none" style={[styles.side, styles.rightSide, { gap: tiny ? 4 : 8 }]}>
-              {!compact && fullscreen.supported ? <Control icon={fullscreen.active ? "Minimize" : "Maximize"} label={fullscreen.active ? "Exit fullscreen" : "Fullscreen"} onPress={toggleFullscreen} /> : null}
-              <Control small={tiny} above={false} icon="Keyboard" label={keyboard ? "Hide keyboard" : "Show keyboard"} active={keyboard} onPress={() => setKeyboard(!keyboard)} />
-              <Control small={tiny} above={false} icon="SlidersHorizontal" label="Screen settings" active={panel === "settings"} onPress={() => togglePanel("settings")} />
+              {!compact && fullscreen.supported ? <Control icon={fullscreen.active ? "Minimize" : "Maximize"} label={fullscreen.active ? t("exitFullscreen") : t("fullscreen")} onPress={toggleFullscreen} /> : null}
+              <Control small={tiny} above={false} icon="Keyboard" label={keyboard ? t("hideKeyboard") : t("showKeyboard")} active={keyboard} onPress={() => setKeyboard(!keyboard)} />
+              <Control small={tiny} above={false} icon="SlidersHorizontal" label={t("screenSettings")} active={panel === "settings"} onPress={() => togglePanel("settings")} />
             </View>
           </View>
 
           <View pointerEvents="box-none" style={[styles.bottom, { bottom: short ? 10 : compact ? 20 : 24 }]}>
             <View style={styles.dock}>
-              <Control small icon={paused ? "Play" : "Pause"} label={paused ? "Resume picture" : "Pause picture"} active={paused} onPress={() => setPaused(!paused)} />
+              <Control small icon={paused ? "Play" : "Pause"} label={paused ? t("resumePicture") : t("pausePicture")} active={paused} onPress={() => setPaused(!paused)} />
               <View style={styles.divider} />
-              <Pressable accessibilityRole="button" accessibilityLabel={control ? "Switch to view only" : "Enable remote control"} accessibilityState={{ selected: control }} onPress={() => setControl(!control)} style={styles.controlMode}>
+              <Pressable accessibilityRole="button" accessibilityLabel={control ? t("switchViewOnly") : t("enableRemoteControl")} accessibilityState={{ selected: control }} onPress={() => setControl(!control)} style={styles.controlMode}>
                 <Icon name={controlling ? "MousePointer2" : "Eye"} size={17} color={controlling ? chrome.green : chrome.muted} />
-                {!compact ? <Text style={[styles.modeLabel, { color: controlling ? chrome.green : chrome.text }]}>{controlling ? "Control" : "View only"}</Text> : null}
+                {!compact ? <Text style={[styles.modeLabel, { color: controlling ? chrome.green : chrome.text }]}>{controlling ? t("control") : t("viewOnly")}</Text> : null}
               </Pressable>
               <View style={styles.divider} />
-              <Control small icon="Clipboard" label="Clipboard" active={panel === "clipboard"} onPress={() => togglePanel("clipboard")} />
-              <Control small icon={inputMode === "trackpad" ? "Touchpad" : "Hand"} label={inputMode === "trackpad" ? "Trackpad mode · Switch to touchscreen" : "Touchscreen mode · Switch to trackpad"} active={inputMode === "trackpad"} onPress={() => setInputMode(inputMode === "trackpad" ? "touchscreen" : "trackpad")} />
-              {!isWeb ? <Control small icon="RotateCw" label="Rotate picture" active={rotated} onPress={() => setRotated(!rotated)} /> : null}
-              {compact && fullscreen.supported ? <Control small icon={fullscreen.active ? "Minimize" : "Maximize"} label={fullscreen.active ? "Exit fullscreen" : "Fullscreen"} onPress={toggleFullscreen} /> : null}
-              <Control small icon="PanelBottomClose" label="Hide controls" onPress={() => { setPanel(null); setMinimal(true); }} />
+              <Control small icon="Clipboard" label={t("clipboard")} active={panel === "clipboard"} onPress={() => togglePanel("clipboard")} />
+              <Control small icon={inputMode === "trackpad" ? "Touchpad" : "Hand"} label={inputMode === "trackpad" ? t("switchTouchscreen") : t("switchTrackpad")} active={inputMode === "trackpad"} onPress={() => setInputMode(inputMode === "trackpad" ? "touchscreen" : "trackpad")} />
+              {!isWeb ? <Control small icon="RotateCw" label={t("rotatePicture")} active={rotated} onPress={() => setRotated(!rotated)} /> : null}
+              {compact && fullscreen.supported ? <Control small icon={fullscreen.active ? "Minimize" : "Maximize"} label={fullscreen.active ? t("exitFullscreen") : t("fullscreen")} onPress={toggleFullscreen} /> : null}
+              <Control small icon="PanelBottomClose" label={t("hideControls")} onPress={() => { setPanel(null); setMinimal(true); }} />
             </View>
-            {inputMode === "trackpad" ? <Text pointerEvents="none" style={[styles.hint, { maxWidth: compact ? 290 : undefined }]}>{controlling ? "Trackpad · Move with one finger · Tap to click\nTwo fingers scroll / right-click · Hold to drag" : "View only · Remote input is disabled"}</Text> : !compact && !short ? <Text pointerEvents="none" style={styles.hint}>{controlling ? "Click to control · Scroll to navigate · Keyboard for shortcuts" : "View only · Your computer is not receiving input"}</Text> : null}
+            {inputMode === "trackpad" ? <Text pointerEvents="none" style={[styles.hint, { maxWidth: compact ? 290 : undefined }]}>{controlling ? t("trackpadHint") : t("viewOnlyDisabled")}</Text> : !compact && !short ? <Text pointerEvents="none" style={styles.hint}>{controlling ? t("controlHint") : t("viewOnlyHint")}</Text> : null}
           </View>
-        </> : <View style={styles.reveal}><Control above icon="Ellipsis" label="Show controls" onPress={() => setMinimal(false)} /></View>}
+        </> : <View style={styles.reveal}><Control above icon="Ellipsis" label={t("showControls")} onPress={() => setMinimal(false)} /></View>}
 
-        {(direct.active ? status.data?.locked : frames.locked) && !frames.asleep ? <View pointerEvents="none" style={styles.locked}><Icon name="LockKeyhole" size={14} color={chrome.text} /><Text style={styles.hint}>{hostPlatform === "win32" ? "Unlock this PC locally to continue" : "Screen locked · Use the keyboard to unlock"}</Text></View> : null}
-        {message ? <View style={[styles.toast, { top: short ? 62 : 88 }]}><Icon name={frames.error || inputError ? "CircleAlert" : "ClipboardCheck"} size={16} color={chrome.blue} /><Text selectable style={styles.toastText}>{message}</Text><Control small icon="X" label="Dismiss message" onPress={() => { setInputError(null); clipboard.setMessage(null); }} /></View> : null}
+        {(direct.active ? status.data?.locked : frames.locked) && !frames.asleep ? <View pointerEvents="none" style={styles.locked}><Icon name="LockKeyhole" size={14} color={chrome.text} /><Text style={styles.hint}>{hostPlatform === "win32" ? t("unlockPc") : t("unlockScreen")}</Text></View> : null}
+        {message ? <View style={[styles.toast, { top: short ? 62 : 88 }]}><Icon name={frames.error || inputError ? "CircleAlert" : "ClipboardCheck"} size={16} color={chrome.blue} /><Text selectable style={styles.toastText}>{message}</Text><Control small icon="X" label={t("dismissMessage")} onPress={() => { setInputError(null); clipboard.setMessage(null); }} /></View> : null}
 
         {permissionMissing ? <View style={styles.centerOverlay} pointerEvents="box-none"><View style={styles.notice}><PermissionNotice status={status.data!} requesting={request.isPending} onRequest={() => request.mutate()} styles={styles} /></View></View>
           : paused || frames.asleep || hostControl.paused ? <View pointerEvents="box-none" style={styles.centerOverlay}><View style={styles.notice}>
             <Icon name={frames.asleep ? "Moon" : "Pause"} size={24} color={theme.colors.foregroundMuted} />
-            <Text style={styles.panelTitle}>{frames.asleep ? "The display is asleep" : hostControl.paused ? "Control paused on this host" : "Picture paused"}</Text>
-            <Text style={styles.description}>{hostControl.paused ? "All viewers can watch, but no one can click, type or access the clipboard." : "Remote input is disabled until you resume."}</Text>
-            <Action styles={styles} label={frames.asleep ? "Wake display" : hostControl.paused ? "Resume host control" : "Resume picture"} onPress={() => { if (frames.asleep) frames.wake(); if (hostControl.paused) hostControl.setPaused(false); setPaused(false); }} />
+            <Text style={styles.panelTitle}>{frames.asleep ? t("displayAsleep") : hostControl.paused ? t("hostControlPaused") : t("picturePaused")}</Text>
+            <Text style={styles.description}>{hostControl.paused ? t("hostPausedHint") : t("resumeInputHint")}</Text>
+            <Action styles={styles} label={frames.asleep ? t("wakeDisplay") : hostControl.paused ? t("resumeHostControl") : t("resumePicture")} onPress={() => { if (frames.asleep) frames.wake(); if (hostControl.paused) hostControl.setPaused(false); setPaused(false); }} />
           </View></View> : null}
 
         {panel && !minimal ? <View style={[styles.panel, compact ? { left: 12, right: 12, top: 68, maxHeight: Math.max(130, stage.height - 144) } : { right: 24, top: 84, width: 342, maxHeight: Math.max(150, stage.height - 190) }]}>
-          <View style={styles.panelHeader}><Text style={styles.panelTitle}>{panel === "displays" ? "Your displays" : panel === "settings" ? "Screen settings" : "Clipboard"}</Text><Pressable accessibilityRole="button" accessibilityLabel="Close panel" onPress={() => setPanel(null)} style={styles.close}><Icon name="X" size={18} color={theme.colors.foregroundMuted} /></Pressable></View>
+          <View style={styles.panelHeader}><Text style={styles.panelTitle}>{panel === "displays" ? t("yourDisplays") : panel === "settings" ? t("screenSettings") : t("clipboard")}</Text><Pressable accessibilityRole="button" accessibilityLabel={t("closePanel")} onPress={() => setPanel(null)} style={styles.close}><Icon name="X" size={18} color={theme.colors.foregroundMuted} /></Pressable></View>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.panelBody}>
             {panel === "displays" ? <>
-              <Text style={styles.description}>Choose the screen you want to work on.</Text>
-              {fallback?.state === "virtual" || fallback?.state === "return-available" ? <Text style={styles.description}>Virtual fallback is active.</Text> : null}
-              {displays.map((item) => <Pressable key={item.stableKey ?? item.id} accessibilityRole="button" accessibilityLabel={`View ${item.name}, ${displayKindLabel(item, hostPlatform)}`} accessibilityState={{ selected: item.id === display?.id }} onPress={() => { chooseDisplay(item.id); frames.wake(); setPanel(null); }} style={[styles.displayRow, item.id === display?.id && styles.selectedRow]}>
+              <Text style={styles.description}>{t("chooseScreenHint")}</Text>
+              {fallback?.state === "virtual" || fallback?.state === "return-available" ? <Text style={styles.description}>{t("virtualActive")}</Text> : null}
+              {displays.map((item) => <Pressable key={item.stableKey ?? item.id} accessibilityRole="button" accessibilityLabel={t("viewDisplay", { name: item.name, kind: displayKindLabel(item, hostPlatform, t) })} accessibilityState={{ selected: item.id === display?.id }} onPress={() => { chooseDisplay(item.id); frames.wake(); setPanel(null); }} style={[styles.displayRow, item.id === display?.id && styles.selectedRow]}>
                 <Icon name={item.builtin ? "Laptop" : "Monitor"} size={22} color={item.id === display?.id ? theme.colors.accent : theme.colors.foregroundMuted} />
-                <View style={{ flex: 1, gap: 4 }}><Text style={styles.rowTitle} numberOfLines={2}>{item.name}</Text><Text style={styles.description}>{displayKindLabel(item, hostPlatform)} · {item.pixelWidth} × {item.pixelHeight}{item.main ? " · Main" : ""}</Text></View>
+                <View style={{ flex: 1, gap: 4 }}><Text style={styles.rowTitle} numberOfLines={2}>{item.name}</Text><Text style={styles.description}>{displayKindLabel(item, hostPlatform, t)} · {item.pixelWidth} × {item.pixelHeight}{item.main ? t("mainSuffix") : ""}</Text></View>
                 {item.id === display?.id ? <Icon name="Check" size={18} color={theme.colors.accent} /> : null}
               </Pressable>)}
             </> : panel === "settings" ? <>
               {hostPlatform === "win32" ? <>
-                <Text style={styles.sectionLabel}>WINDOWS HEADLESS</Text>
-                <Text style={styles.description}>Automatic fallback keeps a virtual screen available when physical displays disconnect. Reconnecting a display offers Switch back; it never switches silently.</Text>
-                <Text style={styles.description}>{!fallback ? "This host does not report headless fallback support. Update the host to configure it." : !fallback.provisioned ? "A virtual display driver must be installed and provisioned separately by an administrator on the host. This control does not install drivers." : fallback.message}</Text>
-                {fallback ? <Pressable accessibilityRole="switch" accessibilityLabel="Automatic headless fallback" accessibilityState={{ checked: fallback.enabled, disabled: !fallback.provisioned || fallbackChange.isPending }} disabled={!fallback.provisioned || fallbackChange.isPending} onPress={() => fallbackChange.mutate(fallback.enabled ? "disable" : "enable")} style={[styles.displayRow, (!fallback.provisioned || fallbackChange.isPending) && { opacity: 0.5 }]}>
-                  <Text style={[styles.rowTitle, { flex: 1 }]}>Automatic fallback</Text><Text style={styles.description}>{fallbackChange.isPending ? "Updating…" : fallback.enabled ? "On" : "Off"}</Text>
+                <Text style={styles.sectionLabel}>{t("windowsHeadless")}</Text>
+                <Text style={styles.description}>{t("fallbackHint")}</Text>
+                <Text style={styles.description}>{!fallback ? t("fallbackUnsupported") : !fallback.provisioned ? t("fallbackProvisioning") : localizeRemoteText(fallback.message, t)}</Text>
+                {fallback ? <Pressable accessibilityRole="switch" accessibilityLabel={t("automaticHeadlessFallback")} accessibilityState={{ checked: fallback.enabled, disabled: !fallback.provisioned || fallbackChange.isPending }} disabled={!fallback.provisioned || fallbackChange.isPending} onPress={() => fallbackChange.mutate(fallback.enabled ? "disable" : "enable")} style={[styles.displayRow, (!fallback.provisioned || fallbackChange.isPending) && { opacity: 0.5 }]}>
+                  <Text style={[styles.rowTitle, { flex: 1 }]}>{t("automaticFallback")}</Text><Text style={styles.description}>{fallbackChange.isPending ? t("updating") : fallback.enabled ? t("on") : t("off")}</Text>
                 </Pressable> : null}
-                {fallback?.state === "virtual" || fallback?.state === "return-available" ? <Text style={styles.description}>Virtual fallback is active.</Text> : null}
-                {fallback && !fallback.provisioned && fallback.message ? <Text style={styles.description}>{fallback.message}</Text> : null}
-                {fallback?.state === "error" && fallback.provisioned ? <Action styles={styles} label={fallbackChange.isPending ? "Retrying…" : "Retry fallback"} disabled={fallbackChange.isPending} onPress={() => fallbackChange.mutate("enable")} /> : null}
-                {fallback?.error || fallbackChange.error ? <Text selectable accessibilityLiveRegion="polite" style={[styles.description, { color: theme.colors.statusWarning }]}>{fallbackChange.error?.message ?? fallback?.error}</Text> : null}
+                {fallback?.state === "virtual" || fallback?.state === "return-available" ? <Text style={styles.description}>{t("virtualActive")}</Text> : null}
+                {fallback && !fallback.provisioned && fallback.message ? <Text style={styles.description}>{localizeRemoteText(fallback.message, t)}</Text> : null}
+                {fallback?.state === "error" && fallback.provisioned ? <Action styles={styles} label={fallbackChange.isPending ? t("retrying") : t("retryFallback")} disabled={fallbackChange.isPending} onPress={() => fallbackChange.mutate("enable")} /> : null}
+                {fallback?.error || fallbackChange.error ? <Text selectable accessibilityLiveRegion="polite" style={[styles.description, { color: theme.colors.statusWarning }]}>{localizeRemoteText(fallbackChange.error?.message ?? fallback?.error, t)}</Text> : null}
                 {status.data?.windowsTopology?.error ? <Text selectable style={styles.description}>{status.data.windowsTopology.error}</Text> : null}
                 <View style={styles.rule} />
               </> : null}
-              <Text style={styles.sectionLabel}>INPUT</Text>
-              <Text style={styles.description}>Control owner: {ownership.state?.label ?? "Connecting…"}. Watching does not claim control. Your first input reserves human control until you explicitly allow agents again.</Text>
-              <Action styles={styles} label={ownership.changing ? "Switching control…" : "Take control / stop agents"} disabled={ownership.changing} onPress={ownership.takeOver} />
-              <View style={styles.qualityRow}>{(["touchscreen", "trackpad"] as InputMode[]).map((mode) => <Pressable key={mode} accessibilityRole="button" accessibilityLabel={`Select ${mode} mode`} accessibilityState={{ selected: inputMode === mode }} onPress={() => setInputMode(mode)} style={[styles.quality, inputMode === mode && styles.selectedRow]}><Icon name={mode === "trackpad" ? "Touchpad" : "Hand"} size={18} color={theme.colors.foreground} /><Text style={styles.rowTitle}>{mode === "trackpad" ? "Trackpad" : "Touchscreen"}</Text></Pressable>)}</View>
-              <Text style={styles.description}>{inputMode === "trackpad" ? "One finger moves the pointer. Tap to click, two-finger tap to right-click, two-finger slide to scroll. Hold one finger, then move to drag. Pinch to zoom; the picture follows the pointer near its edges." : "Tap where you want to click. Long-press to right-click. Pinch to zoom, then slide one finger to pan. Physical mouse input stays unchanged in either mode."}</Text>
-              <Action styles={styles} label={feedbackEnabled ? "Haptic feedback: on" : "Haptic feedback: off"} onPress={() => setFeedbackEnabled(!feedbackEnabled)} />
-              <Text style={styles.description}>Click feedback happens on this device, without waiting for the host. Vibration depends on the device and system settings.</Text>
+              <Text style={styles.sectionLabel}>{t("inputSection")}</Text>
+              <Text style={styles.description}>{t("ownerHint", { owner: localizeRemoteText(ownership.state?.label, t) ?? t("connectingEllipsis") })}</Text>
+              <Action styles={styles} label={ownership.changing ? t("switchingControl") : t("takeControlStopAgents")} disabled={ownership.changing} onPress={ownership.takeOver} />
+              <View style={styles.qualityRow}>{(["touchscreen", "trackpad"] as InputMode[]).map((mode) => <Pressable key={mode} accessibilityRole="button" accessibilityLabel={t("selectInputMode", { mode: mode === "trackpad" ? t("trackpad") : t("touchscreen") })} accessibilityState={{ selected: inputMode === mode }} onPress={() => setInputMode(mode)} style={[styles.quality, inputMode === mode && styles.selectedRow]}><Icon name={mode === "trackpad" ? "Touchpad" : "Hand"} size={18} color={theme.colors.foreground} /><Text style={styles.rowTitle}>{mode === "trackpad" ? t("trackpad") : t("touchscreen")}</Text></Pressable>)}</View>
+              <Text style={styles.description}>{inputMode === "trackpad" ? t("trackpadDescription") : t("touchscreenDescription")}</Text>
+              <Action styles={styles} label={feedbackEnabled ? t("hapticsOn") : t("hapticsOff")} onPress={() => setFeedbackEnabled(!feedbackEnabled)} />
+              <Text style={styles.description}>{t("hapticsHint")}</Text>
               <View style={styles.rule} />
-              <Text style={styles.sectionLabel}>PICTURE QUALITY</Text>
-              <View style={styles.qualityRow}>{QUALITIES.map((quality, index) => <Pressable key={quality.label} accessibilityRole="button" accessibilityLabel={`${quality.label} quality`} accessibilityState={{ selected: index === qualityIndex }} onPress={() => setQualityIndex(index)} style={[styles.quality, index === qualityIndex && styles.selectedRow]}><Text style={styles.rowTitle}>{quality.label}</Text><Text style={styles.description}>{["Less data", "Everyday", "More detail"][index]}</Text></Pressable>)}</View>
-              <Text style={styles.sectionLabel}>LIVE CONNECTION</Text>
-              <View style={styles.metrics}><Metric label={direct.active ? "VIDEO FPS" : "UPDATES/S"} value={paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1)} styles={styles} /><Metric label="ROUND TRIP" value={direct.active && direct.rttMs === null ? "—" : `${direct.active ? direct.rttMs : frames.latencyMs} ms`} styles={styles} /><Metric label={direct.active ? "VIDEO RATE" : "FRAME"} value={direct.active ? `${direct.kbps} kbps` : `${frames.kilobytes} KB`} styles={styles} /></View>
-              <View style={styles.transport}><View style={[styles.dot, { backgroundColor: direct.active ? theme.colors.accent : theme.colors.foregroundMuted }]} /><Text style={styles.rowTitle}>{direct.active ? "WebRTC · H.264 · Encrypted" : direct.connecting ? "Connecting direct video…" : "Paseo · JPEG frames"}</Text></View>
-              {direct.supported && !managedSelection && lastGood.current?.webrtc ? <><Action styles={styles} label={preferDirect ? "Use Paseo transport only" : "Try direct WebRTC video"} onPress={() => setPreferDirect(!preferDirect)} /><Text style={styles.description}>Direct video uses encrypted peer-to-peer media. Signalling and input stay on Paseo. If direct video cannot connect, frames automatically use Paseo instead.</Text>{direct.reason ? <Text style={styles.description}>{direct.reason}</Text> : null}</> : <Text style={styles.description}>Uses your existing Paseo connection. No separate VNC port or public screen URL.</Text>}
-              {hostControl.known ? <><View style={styles.rule} /><Text style={styles.sectionLabel}>HOST SAFETY</Text><Text style={styles.description}>Unlike View only, this stops remote input for everyone connected to this computer.</Text><Action styles={styles} label={hostControl.changing ? "Updating…" : hostControl.paused ? "Resume control for everyone" : "Pause control for everyone"} disabled={hostControl.changing} onPress={() => hostControl.setPaused(!hostControl.paused)} /></> : null}
-              {hostPlatform === "win32" ? <Text style={styles.description}>Windows support is experimental. UAC and secure desktops cannot be controlled.</Text> : null}
+              <Text style={styles.sectionLabel}>{t("qualitySection")}</Text>
+              <View style={styles.qualityRow}>{QUALITIES.map((quality, index) => <Pressable key={quality.label} accessibilityRole="button" accessibilityLabel={t("qualityLabel", { quality: t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!) })} accessibilityState={{ selected: index === qualityIndex }} onPress={() => setQualityIndex(index)} style={[styles.quality, index === qualityIndex && styles.selectedRow]}><Text style={styles.rowTitle}>{t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!)}</Text><Text style={styles.description}>{[t("lessData"), t("everyday"), t("moreDetail")][index]}</Text></Pressable>)}</View>
+              <Text style={styles.sectionLabel}>{t("liveConnection")}</Text>
+              <View style={styles.metrics}><Metric label={direct.active ? t("videoFps") : t("updatesPerSecond")} value={paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1)} styles={styles} /><Metric label={t("roundTrip")} value={direct.active && direct.rttMs === null ? "—" : `${direct.active ? direct.rttMs : frames.latencyMs} ms`} styles={styles} /><Metric label={direct.active ? t("videoRate") : t("frame")} value={direct.active ? `${direct.kbps} kbps` : `${frames.kilobytes} KB`} styles={styles} /></View>
+              <View style={styles.transport}><View style={[styles.dot, { backgroundColor: direct.active ? theme.colors.accent : theme.colors.foregroundMuted }]} /><Text style={styles.rowTitle}>{direct.active ? t("encryptedVideo") : direct.connecting ? t("connectingVideo") : t("paseoFrames")}</Text></View>
+              {direct.supported && !managedSelection && lastGood.current?.webrtc ? <><Action styles={styles} label={preferDirect ? t("paseoOnly") : t("tryWebrtc")} onPress={() => setPreferDirect(!preferDirect)} /><Text style={styles.description}>{t("directVideoHint")}</Text>{direct.reason ? <Text style={styles.description}>{localizeRemoteText(direct.reason, t)}</Text> : null}</> : <Text style={styles.description}>{t("paseoConnectionHint")}</Text>}
+              {hostControl.known ? <><View style={styles.rule} /><Text style={styles.sectionLabel}>{t("hostSafety")}</Text><Text style={styles.description}>{t("hostSafetyHint")}</Text><Action styles={styles} label={hostControl.changing ? t("updating") : hostControl.paused ? t("resumeEveryone") : t("pauseEveryone")} disabled={hostControl.changing} onPress={() => hostControl.setPaused(!hostControl.paused)} /></> : null}
+              {hostPlatform === "win32" ? <Text style={styles.description}>{t("windowsExperimental")}</Text> : null}
             </> : <ClipboardPanel styles={styles} enabled={controlling} onPaste={pasteOnHost} onRead={() => void pasteLocalClipboard()} onCopy={clipboard.supported ? clipboard.pull : undefined} />}
           </ScrollView>
         </View> : null}
@@ -254,13 +256,13 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   );
 }
 
-function displayKindLabel(display: ScreenDisplay, hostPlatform: string): string {
-  if (display.managedVirtual) return "Virtual fallback";
-  if (display.kind === "virtual") return "Virtual display";
-  if (display.kind === undefined && hostPlatform !== "win32") return "Display";
-  if (display.kind === "physical") return "Physical";
-  if (display.kind === "fallback") return "Windows fallback";
-  return "Unknown";
+function displayKindLabel(display: ScreenDisplay, hostPlatform: string, t: RemoteTranslate): string {
+  if (display.managedVirtual) return t("virtualFallback");
+  if (display.kind === "virtual") return t("virtualDisplay");
+  if (display.kind === undefined && hostPlatform !== "win32") return t("display");
+  if (display.kind === "physical") return t("physical");
+  if (display.kind === "fallback") return t("windowsFallback");
+  return t("unknown");
 }
 
 function Action({ styles, label, disabled, onPress }: { styles: Styles; label: string; disabled?: boolean; onPress(): void }) {
@@ -270,15 +272,17 @@ function Metric({ styles, label, value }: { styles: Styles; label: string; value
   return <View style={{ flex: 1, gap: 5 }}><Text style={styles.metricValue}>{value}</Text><Text style={styles.metricLabel}>{label}</Text></View>;
 }
 function ClipboardPanel({ styles, enabled, onPaste, onRead, onCopy }: { styles: Styles; enabled: boolean; onPaste(text: string, shift?: boolean): void; onRead(): void; onCopy?: () => void }) {
+  const { t } = useRemoteTranslation();
   const [text, setText] = useState("");
-  return <><Text style={styles.description}>Paste text here to send it to the focused app. Supports Chinese and multiline text. This replaces the host's text clipboard.</Text><TextInput accessibilityLabel="Text to paste on host" style={styles.clipboardInput} placeholder="Paste your text here…" placeholderTextColor={styles.description.color} value={text} onChangeText={setText} multiline maxLength={10000} editable={enabled} />
-    <Action styles={styles} label="Paste on host" disabled={!enabled || !text} onPress={() => { onPaste(text); setText(""); }} />
-    <Action styles={styles} label="Paste into terminal (Ctrl+Shift+V)" disabled={!enabled || !text} onPress={() => { onPaste(text, true); setText(""); }} />
-    {isWeb ? <Action styles={styles} label="Read this device's clipboard" disabled={!enabled} onPress={onRead} /> : null}
-    {onCopy ? <Action styles={styles} label="Copy from host" disabled={!enabled} onPress={onCopy} /> : null}
-    {!enabled ? <Text style={styles.description}>Resume remote control to use the clipboard.</Text> : null}</>;
+  return <><Text style={styles.description}>{t("clipboardDescription")}</Text><TextInput accessibilityLabel={t("pasteTextLabel")} style={styles.clipboardInput} placeholder={t("pastePlaceholder")} placeholderTextColor={styles.description.color} value={text} onChangeText={setText} multiline maxLength={10000} editable={enabled} />
+    <Action styles={styles} label={t("pasteOnHost")} disabled={!enabled || !text} onPress={() => { onPaste(text); setText(""); }} />
+    <Action styles={styles} label={t("pasteInTerminal")} disabled={!enabled || !text} onPress={() => { onPaste(text, true); setText(""); }} />
+    {isWeb ? <Action styles={styles} label={t("readClipboard")} disabled={!enabled} onPress={onRead} /> : null}
+    {onCopy ? <Action styles={styles} label={t("copyFromHost")} disabled={!enabled} onPress={onCopy} /> : null}
+    {!enabled ? <Text style={styles.description}>{t("resumeClipboard")}</Text> : null}</>;
 }
 function KeyboardTray({ enabled, niri, hostPlatform, send, paste, onClose }: { enabled: boolean; niri: boolean; hostPlatform: string; send(event: ScreenInputEvent): void; paste(text: string): void; onClose(): void }) {
+  const { t } = useRemoteTranslation();
   const [text, setText] = useState("");
   const [modifiers, setModifiers] = useState<ScreenModifier[]>([]);
   const key = (keyCode: number) => { if (enabled) { send({ type: "key", keyCode, modifiers }); setModifiers([]); } };
@@ -294,7 +298,7 @@ function KeyboardTray({ enabled, niri, hostPlatform, send, paste, onClose }: { e
   };
   useEffect(() => { if (!enabled) setModifiers([]); }, [enabled]);
   return <View style={base.keyboard}>
-    <View style={base.composer}><Icon name="Keyboard" size={18} color={chrome.muted} /><TextInput accessibilityLabel="Type on the host" style={base.textInput} placeholder={enabled ? "Type on your computer…" : "Resume control to type"} placeholderTextColor={chrome.muted} autoCorrect={false} autoCapitalize="none" value={text} onChangeText={setText} onSubmitEditing={submit} editable={enabled} maxLength={10000} /><Key label="Send text" icon="ArrowUp" onPress={submit} disabled={!enabled || !text} /><Control small icon="X" label="Hide keyboard" onPress={onClose} /></View>
+    <View style={base.composer}><Icon name="Keyboard" size={18} color={chrome.muted} /><TextInput accessibilityLabel={t("typeOnHost")} style={base.textInput} placeholder={enabled ? t("typePlaceholder") : t("resumeTyping")} placeholderTextColor={chrome.muted} autoCorrect={false} autoCapitalize="none" value={text} onChangeText={setText} onSubmitEditing={submit} editable={enabled} maxLength={10000} /><Key label={t("sendText")} icon="ArrowUp" onPress={submit} disabled={!enabled || !text} /><Control small icon="X" label={t("hideKeyboard")} onPress={onClose} /></View>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={base.keyRow}>
       {(["ctrl", "alt", "shift", "cmd"] as ScreenModifier[]).map((modifier) => <Key key={modifier} label={modifier === "cmd" ? hostPlatform === "darwin" ? "Cmd" : "Super" : modifier === "ctrl" ? "Ctrl" : modifier === "alt" ? "Alt" : "Shift"} active={modifiers.includes(modifier)} disabled={!enabled} onPress={() => setModifiers((old) => old.includes(modifier) ? old.filter((item) => item !== modifier) : [...old, modifier])} />)}
       <View style={base.keyDivider} />
@@ -302,18 +306,19 @@ function KeyboardTray({ enabled, niri, hostPlatform, send, paste, onClose }: { e
       <Key label={hostPlatform === "darwin" ? "Cmd+C" : "Ctrl+C"} disabled={!enabled} onPress={() => send({ type: "key", char: "c", modifiers: [hostPlatform === "darwin" ? "cmd" : "ctrl"] })} />
       <View style={base.keyDivider} />
       <Key label={hostPlatform === "darwin" ? "Cmd+Tab" : "Alt+Tab"} disabled={!enabled} onPress={() => send({ type: "key", keyCode: KEY.tab, modifiers: [hostPlatform === "darwin" ? "cmd" : "alt"] })} />
-      <Key label={hostPlatform === "darwin" ? "Cmd+Space" : hostPlatform === "win32" ? "Start" : "Super"} disabled={!enabled} onPress={() => send({ type: "key", keyCode: hostPlatform === "darwin" ? KEY.space : KEY.command, modifiers: hostPlatform === "darwin" ? ["cmd"] : [] })} />
+      <Key label={hostPlatform === "darwin" ? "Cmd+Space" : hostPlatform === "win32" ? t("start") : "Super"} disabled={!enabled} onPress={() => send({ type: "key", keyCode: hostPlatform === "darwin" ? KEY.space : KEY.command, modifiers: hostPlatform === "darwin" ? ["cmd"] : [] })} />
       <Key label={hostPlatform === "darwin" ? "Cmd+W" : "Ctrl+W"} disabled={!enabled} onPress={() => send({ type: "key", char: "w", modifiers: [hostPlatform === "darwin" ? "cmd" : "ctrl"] })} />
       {hostPlatform !== "darwin" ? <Key label="Alt+F4" disabled={!enabled} onPress={() => send({ type: "key", keyCode: KEY.f4, modifiers: ["alt"] })} /> : <Key label="Cmd+Q" disabled={!enabled} onPress={() => send({ type: "key", char: "q", modifiers: ["cmd"] })} />}
-      <Key label="Workspace left" icon="ChevronLeft" disabled={!enabled} onPress={() => send({ type: "key", keyCode: KEY.left, modifiers: hostPlatform === "darwin" ? ["ctrl"] : hostPlatform === "win32" ? ["ctrl", "cmd"] : ["ctrl", "alt"] })} />
-      <Key label="Workspace right" icon="ChevronRight" disabled={!enabled} onPress={() => send({ type: "key", keyCode: KEY.right, modifiers: hostPlatform === "darwin" ? ["ctrl"] : hostPlatform === "win32" ? ["ctrl", "cmd"] : ["ctrl", "alt"] })} />
+      <Key label={t("workspaceLeft")} icon="ChevronLeft" disabled={!enabled} onPress={() => send({ type: "key", keyCode: KEY.left, modifiers: hostPlatform === "darwin" ? ["ctrl"] : hostPlatform === "win32" ? ["ctrl", "cmd"] : ["ctrl", "alt"] })} />
+      <Key label={t("workspaceRight")} icon="ChevronRight" disabled={!enabled} onPress={() => send({ type: "key", keyCode: KEY.right, modifiers: hostPlatform === "darwin" ? ["ctrl"] : hostPlatform === "win32" ? ["ctrl", "cmd"] : ["ctrl", "alt"] })} />
     </ScrollView>
   </View>;
 }
 function PermissionNotice({ status, requesting, onRequest, styles }: { status: ScreenStatus; requesting: boolean; onRequest(): void; styles: Styles }) {
-  if (!status.supported || status.error) return <><Icon name="CircleAlert" size={25} color={styles.description.color} /><Text style={styles.panelTitle}>Screen unavailable</Text><Text selectable style={styles.description}>{status.error ?? "This host is not supported."}</Text></>;
+  const { t } = useRemoteTranslation();
+  if (!status.supported || status.error) return <><Icon name="CircleAlert" size={25} color={styles.description.color} /><Text style={styles.panelTitle}>{t("screenUnavailable")}</Text><Text selectable style={styles.description}>{localizeRemoteText(status.error, t) ?? t("hostUnsupported")}</Text></>;
   const portal = status.platform === "linux" && status.backend === "wayland";
-  return <><Icon name="ShieldCheck" size={25} color={styles.description.color} /><Text style={styles.panelTitle}>{status.screenRecording ? "View-only permission" : "Allow screen sharing"}</Text><Text style={styles.description}>{portal ? status.awaitingApproval ? "Waiting for someone at the host to approve screen sharing and remote interaction." : `${status.permissionError ? `${status.permissionError} ` : ""}Approve sharing on the host. Turn on Allow Remote Interaction, and Allow Clipboard Access for copy and paste.` : status.platform === "linux" ? "This Linux host is missing input or capture support. Check the host's screen backend." : "Allow Screen Recording and Accessibility for Paseo in System Settings → Privacy & Security, then restart Paseo on the Mac."}</Text><Action styles={styles} label={requesting ? "Requesting…" : "Show prompt on host"} disabled={requesting} onPress={onRequest} /></>;
+  return <><Icon name="ShieldCheck" size={25} color={styles.description.color} /><Text style={styles.panelTitle}>{status.screenRecording ? t("viewPermission") : t("allowSharing")}</Text><Text style={styles.description}>{portal ? status.awaitingApproval ? t("waitingApproval") : [status.permissionError, t("portalApproval")].filter(Boolean).join(" ") : status.platform === "linux" ? t("linuxMissingBackend") : t("macPermissions")}</Text><Action styles={styles} label={requesting ? t("requesting") : t("showHostPrompt")} disabled={requesting} onPress={onRequest} /></>;
 }
 
 const base = StyleSheet.create({

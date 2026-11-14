@@ -2,6 +2,12 @@
   "id": "remote-control",
   "name": "Remote Control",
   "description": "Human and agent remote control for Paseo with shared input, visible ownership, live viewing and human takeover.",
+  "translations": {
+    "zh-CN": {
+      "name": "远程控制",
+      "description": "在 Paseo 中远程操作电脑，支持实时观看、人类接管和可见的智能体控制提示。"
+    }
+  },
   "requirements": {
     "paseo": ">=0.13.0"
   },

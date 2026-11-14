@@ -7,6 +7,7 @@ import { useFeedback } from "./feedback";
 import { type Size, type View2D } from "./geometry";
 import { TouchController, type InputMode } from "./touch-controller";
 import { useWebTouch } from "./web";
+import { useRemoteTranslation } from "../messages";
 
 const isWeb = Platform.OS === "web";
 const touchesOf = (event: GestureResponderEvent) => event.nativeEvent.touches.map((touch) => ({ x: touch.locationX, y: touch.locationY }));
@@ -18,6 +19,7 @@ export function TouchStage({ uri, stage, content, rotated, controlling, mode, se
   onPictureNode?(node: unknown): void;
   onVideoNode?(node: unknown): void;
 }) {
+  const { t } = useRemoteTranslation();
   const [view, setView] = useState<View2D>({ content, rotated, zoom: 1, panX: 0, panY: 0 });
   const [pointer, setPointer] = useState({ x: 0.5, y: 0.5 });
   const [touchNode, setTouchNode] = useState<unknown>(null);
@@ -47,8 +49,8 @@ export function TouchStage({ uri, stage, content, rotated, controlling, mode, se
   const cursorX = stage.width / 2 + (view.rotated ? -py : px);
   const cursorY = stage.height / 2 + (view.rotated ? px : py);
   return (
-    <View ref={setTouchNode} collapsable={false} accessibilityLabel="Remote touch surface" style={{ width: stage.width, height: stage.height, overflow: "hidden" }}>
-      <View ref={onPictureNode} accessibilityLabel={isWeb ? "Remote screen" : undefined} pointerEvents={isWeb ? "auto" : "none"} style={{
+    <View ref={setTouchNode} collapsable={false} accessibilityLabel={t("touchSurface")} style={{ width: stage.width, height: stage.height, overflow: "hidden" }}>
+      <View ref={onPictureNode} accessibilityLabel={isWeb ? t("remoteScreen") : undefined} pointerEvents={isWeb ? "auto" : "none"} style={{
         position: "absolute", left: (stage.width - view.content.width) / 2, top: (stage.height - view.content.height) / 2,
         width: view.content.width, height: view.content.height,
         transform: [{ rotate: view.rotated ? "90deg" : "0deg" }, { scale: view.zoom }, { translateX: view.panX }, { translateY: view.panY }],
@@ -56,8 +58,8 @@ export function TouchStage({ uri, stage, content, rotated, controlling, mode, se
         <FrameImage uri={uri} width={view.content.width} height={view.content.height} />
         {isWeb ? <View ref={onVideoNode} pointerEvents="none" style={{ position: "absolute", inset: 0 }} /> : null}
       </View>
-      {!isWeb ? <View collapsable={false} accessibilityLabel="Remote screen" style={{ position: "absolute", inset: 0 }} {...responder.panHandlers} /> : null}
-      {mode === "trackpad" && controlling ? <View pointerEvents="none" accessibilityLabel="Trackpad cursor" style={{ position: "absolute", left: cursorX - 3, top: cursorY - 3, width: 24, height: 24, borderRadius: 12, backgroundColor: "rgba(14,22,29,0.65)", alignItems: "center", justifyContent: "center" }}><Icon name="MousePointer2" size={19} color="#d9efff" /></View> : null}
+      {!isWeb ? <View collapsable={false} accessibilityLabel={t("remoteScreen")} style={{ position: "absolute", inset: 0 }} {...responder.panHandlers} /> : null}
+      {mode === "trackpad" && controlling ? <View pointerEvents="none" accessibilityLabel={t("trackpadCursor")} style={{ position: "absolute", left: cursorX - 3, top: cursorY - 3, width: 24, height: 24, borderRadius: 12, backgroundColor: "rgba(14,22,29,0.65)", alignItems: "center", justifyContent: "center" }}><Icon name="MousePointer2" size={19} color="#d9efff" /></View> : null}
     </View>
   );
 }
