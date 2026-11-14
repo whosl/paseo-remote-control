@@ -22,8 +22,14 @@ that an action succeeded.
 
 Viewer media lives under `server/screen/`: a bounded persistent MJPEG capture pool,
 latest-frame hash/base64 cache, changed-frame long polls and optional H.264 WebRTC.
-Input does not wait behind capture. Capture rate ceilings are 30/24/15 fps;
-unchanged pictures omit payloads. Old screenshot helpers remain for other desktops.
+Input does not wait behind capture. Windows JPEG rate ceilings are 30/24/15 fps;
+WebRTC quality presets all request up to 30 fps. Unchanged pictures omit payloads.
+The private Python worker uses a screen encoder through the pinned aiortc 1.16
+codec factory. It retains RTP packetization and REMB feedback, configures x264
+for low latency, and chooses bounded bitrate budgets from frame size. No installed
+library files are patched. A quantized capture filter avoids undershooting the
+requested cadence when compositor timestamps jitter. Old screenshot helpers
+remain for other desktops.
 Agent accessibility logic remains in `server/computer-use-mcp/`, independent of
 Paseo imports. Root entry points handle SDK wiring and lifecycle cleanup.
 

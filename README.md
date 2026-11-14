@@ -132,6 +132,13 @@ Outside-network viewing can use host-configured STUN and authenticated TURN;
 without that configuration there is no guaranteed Internet NAT traversal. Failed
 video automatically falls back to JPEG.
 
+WebRTC Fast, Balanced and Sharp request up to 1280, 1920 and 2560 pixels wide,
+all at up to 30 FPS. The screen encoder starts conservatively at 1 Mbps and probes
+upward gradually, with ceilings of 4, 8 and 12 Mbps for 720p, 1080p and 1440p frames.
+Probing stops when receiver bandwidth estimates drop. Static desktops naturally use less bandwidth
+and fewer newly captured frames; the numbers in picture settings report actual
+received video rather than the configured ceiling.
+
 The Android receiver loads a local, receive-only video document inside Paseo's
 existing WebView. Signalling and session heartbeats use authenticated plugin RPCs;
 touch, keyboard, clipboard and ownership continue through the existing control

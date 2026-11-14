@@ -1,5 +1,6 @@
 """Private stdio-signalled WebRTC worker. No HTTP server and no unauthenticated signalling."""
 import asyncio
+import fractions
 import json
 import logging
 import os
@@ -8,12 +9,96 @@ import subprocess
 import sys
 import time
 
+import av
+import aiortc.codecs as codecs
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
+from aiortc.codecs.h264 import H264Encoder
 from aiortc.contrib.media import MediaPlayer
 
 logging.basicConfig(stream=sys.stderr, level=logging.ERROR)
 sessions = {}
 closing = False
+
+
+class ScreenH264Encoder(H264Encoder):
+    """Screen-oriented encoder for the pinned aiortc 1.16 factory, in this worker only."""
+
+    def __init__(self):
+        super().__init__()
+        self._bitrate = 1_000_000
+        self._maximum = 12_000_000
+        self._estimate = None
+        self._size = None
+        self._desired = 8_000_000
+        self._probe_target = 0
+        self._probe_after = time.monotonic() + 1
+        self._probing = True
+
+    @property
+    def target_bitrate(self):
+        return self._bitrate
+
+    @target_bitrate.setter
+    def target_bitrate(self, bitrate):
+        # Preserve receiver REMB feedback, including estimates below the default
+        # encoder's 500 kbps floor. More detail must not overwhelm a weak link.
+        estimate = max(100_000, int(bitrate))
+        if self._estimate is not None and estimate < self._estimate * 0.9:
+            self._probing = False
+            self._probe_target = 0
+        self._estimate = estimate
+        self._bitrate = min(max(estimate, self._probe_target), self._maximum)
+
+    def _encode_frame(self, frame, force_keyframe):
+        size = (frame.width, frame.height)
+        if self._size != size:
+            self._size = size
+            pixels = frame.width * frame.height
+            self._maximum = (4_000_000 if pixels <= 1280 * 720 else 8_000_000 if pixels <= 1920 * 1080 else 12_000_000)
+            self._desired = (2_000_000 if pixels <= 1280 * 720 else 4_000_000 if pixels <= 1920 * 1080 else 8_000_000)
+            # Probe from a conservative startup rate. A high first-frame burst
+            # can lose the keyframe on a limited TURN uplink before REMB arrives.
+            self._bitrate = min(self._estimate if self._estimate is not None else 1_000_000, self._maximum)
+            self._probe_target = 0
+            self._probe_after = time.monotonic() + 1
+        # An app-limited receiver estimate can otherwise keep a healthy link at
+        # the startup rate forever. Probe by at most 25% once a second; the first
+        # meaningful REMB decrease permanently ends probing for this encoder.
+        if self._probing and self._bitrate < self._desired and time.monotonic() >= self._probe_after:
+            self._probe_target = min(self._desired, self._bitrate * 5 // 4)
+            self._bitrate = self._probe_target
+            self._probe_after = time.monotonic() + 1
+        if self.codec and (self.codec.width != frame.width or self.codec.height != frame.height
+                           or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate > 0.1):
+            self.buffer_data = b""
+            self.buffer_pts = None
+            self.codec = None
+        if self.codec is None:
+            self.codec = av.CodecContext.create("libx264", "w")
+            self.codec.width, self.codec.height = size
+            self.codec.bit_rate = self.target_bitrate
+            self.codec.pix_fmt = "yuv420p"
+            self.codec.framerate = fractions.Fraction(30, 1)
+            self.codec.time_base = fractions.Fraction(1, 30)
+            self.codec.thread_count = min(8, os.cpu_count() or 1)
+            self.codec.gop_size = 60
+            self.codec.max_b_frames = 0
+            macroblocks = ((frame.width + 15) // 16) * ((frame.height + 15) // 16)
+            level = "3.1" if macroblocks <= 3600 else "4.0" if macroblocks <= 8192 else "5.0" if macroblocks <= 22080 else "5.2"
+            self.codec.options = {"preset": "veryfast", "tune": "zerolatency", "level": level}
+            self.codec.profile = "Baseline"
+        return super()._encode_frame(frame, force_keyframe)
+
+
+# RTCRtpSender imports get_encoder, whose globals resolve this class on demand.
+# No installed library files or other Paseo processes are modified.
+codecs.H264Encoder = ScreenH264Encoder
+
+
+def capture_filter(width, fps):
+    # Quantize to time slots instead of requiring a full floating-point period
+    # since the last frame. Capture jitter otherwise turns 30 fps into ~20 fps.
+    return f"select='isnan(prev_selected_t)+gt(floor(t*{fps}),floor(prev_selected_t*{fps}))',scale={width}:-2"
 
 
 class LatestVideo(MediaStreamTrack):
@@ -84,7 +169,7 @@ async def offer(message):
     try:
         await pc.setRemoteDescription(RTCSessionDescription(sdp=message["sdp"], type="offer"))
         width, fps = int(message["width"]), int(message["fps"])
-        filter_string = f"select='isnan(prev_selected_t)+gte(t-prev_selected_t,{1 / fps})',scale={width}:-2"
+        filter_string = capture_filter(width, fps)
         process = subprocess.Popen([
             message["recorder"], "-o", message["output"], "--no-dmabuf", "-c", "rawvideo", "-m", "nut",
             "-F", filter_string, "-x", "yuv420p", "-f", "pipe:1",

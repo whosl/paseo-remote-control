@@ -29,8 +29,10 @@ offers an explicit switch back rather than silently changing the viewed screen.
 Display changes reserve human control. Unknown monitor states do not trigger
 automatic changes, and disabling automation keeps the only working screen alive.
 
-Viewing uses the existing Paseo connection with optional encrypted direct H.264
-video in supported browsers and Android clients that include Paseo's WebView.
+Viewing uses the existing Paseo connection. Linux/Niri hosts can also send encrypted
+H.264 video to supported browsers and Android clients that include Paseo's WebView,
+with quality presets up to 2560 pixels wide and 30 frames per second. Video bitrate
+adapts to the receiving connection; static desktops use less traffic.
 Android reuses that installed component; unavailable or failed video falls back
 to JPEG. iOS uses JPEG. A host administrator can configure STUN and authenticated
 TURN for outside-network viewing. Direct paths are preferred, and the picture

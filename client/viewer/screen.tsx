@@ -101,7 +101,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   // Keep desktop detail available when a phone zooms in; its current layout width
   // must not cap every quality level to the same low-resolution video stream.
   const videoWidth = [1280, 1920, 2560][qualityIndex]!;
-  const videoFps = [30, 24, 15][qualityIndex]!;
+  const videoFps = 30;
   const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo }, videoAttempt);
   const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), report: reportVideo, offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused, videoAttempt);
   const direct = isWeb ? browserDirect : nativeDirect;

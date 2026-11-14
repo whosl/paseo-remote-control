@@ -9,3 +9,5 @@ build/
 *.log
 .env
 .env.*
+__pycache__/
+*.py[cod]
