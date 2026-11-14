@@ -3,7 +3,7 @@ import { useRpc, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PixelRatio, Platform, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from "react-native";
+import { Platform, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from "react-native";
 import { chooseDisplayRpc, displayFallbackRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoClientEventRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenDisplay, type ScreenInputEvent, type ScreenModifier, type ScreenStatus } from "../../shared/screen/rpc";
 import { readLocalClipboard, useHostClipboard } from "./clipboard";
 import { useControlPause } from "./control";
@@ -96,10 +96,11 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const [aspect, setAspect] = useState(16 / 10);
   const content = fitContent(stage, aspect, !isWeb && rotated);
   const quality = QUALITIES[qualityIndex]!;
-  const wanted = content.width > 0 ? Math.ceil(content.width * Math.min(PixelRatio.get(), 2) / 160) * 160 : quality.maxWidth;
   // Direct video does not carry frame display keys yet; managed hotplug uses identity-bearing JPEGs.
   const directEnabled = canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true;
-  const videoWidth = Math.max(320, Math.min(quality.maxWidth, wanted));
+  // Keep desktop detail available when a phone zooms in; its current layout width
+  // must not cap every quality level to the same low-resolution video stream.
+  const videoWidth = [1280, 1920, 2560][qualityIndex]!;
   const videoFps = [30, 24, 15][qualityIndex]!;
   const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo }, videoAttempt);
   const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), report: reportVideo, offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused, videoAttempt);
