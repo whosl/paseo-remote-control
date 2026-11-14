@@ -1,5 +1,6 @@
 import type { RemoteControlState } from "../../shared/control";
 import { ComputerUseToolError } from "../computer-use-mcp/contract/errors";
+import { randomUUID } from "node:crypto";
 
 export interface AgentAction { callerId: string; agentId?: string | null; toolName: string; app?: string; mutating: boolean }
 export interface ControlDependencies {
@@ -20,12 +21,37 @@ export class ControlCoordinator {
   private stopped = false;
   private handoff: Promise<unknown> = Promise.resolve();
   private notice: Promise<void> | null = null;
+  private viewers = new Set<string>();
+  private viewerRevision = 0;
   constructor(private readonly deps: ControlDependencies, initial = { paused: false, humanPriority: false }) {
     this.state = { ...initial, mode: initial.paused ? "paused" : initial.humanPriority ? "human" : "idle",
       callerId: null, agentId: null, label: initial.humanPriority ? "Human control" : "Ready", tool: null, app: null,
       since: Date.now(), revision: 0, noticeError: null };
   }
   snapshot(): RemoteControlState { return { ...this.state }; }
+  openViewer(): { viewerId: string } {
+    if (this.stopped) throw new Error("Remote control is paused");
+    if (this.viewers.size >= 64) throw new Error("Too many remote control viewers");
+    const viewerId = randomUUID();
+    this.viewers.add(viewerId);
+    this.viewerRevision++;
+    return { viewerId };
+  }
+  assertViewer(viewerId?: string): void {
+    if (viewerId !== undefined && !this.viewers.has(viewerId)) throw new Error("Viewer session ended; reopen Remote Control");
+  }
+  async closeViewer(viewerId: string): Promise<RemoteControlState> {
+    if (!this.viewers.delete(viewerId)) return this.snapshot();
+    const revision = ++this.viewerRevision, generation = this.generation;
+    const eligible = () => !this.stopped && !this.state.paused && this.state.humanPriority
+      && this.state.mode !== "agent" && this.viewers.size === 0
+      && revision === this.viewerRevision && generation === this.generation;
+    if (!eligible()) return this.snapshot();
+    // A rapid remount/reopen must not briefly grant agents access between screens.
+    await new Promise(resolve => setTimeout(resolve, 200));
+    if (!eligible()) return this.snapshot();
+    return this.allowAgents(eligible);
+  }
   initialize(initial: { paused: boolean; humanPriority: boolean }): void {
     if (this.state.revision !== 0) throw new Error("Control was initialized after use");
     this.change({ ...initial, mode: initial.paused ? "paused" : initial.humanPriority ? "human" : "idle", label: initial.paused ? "All control paused" : initial.humanPriority ? "Human control" : "Ready" });
@@ -49,7 +75,7 @@ export class ControlCoordinator {
   }
   assertAgentAllowed(): void {
     if (this.stopped || this.state.paused || this.state.humanPriority) {
-      throw new ComputerUseToolError("aborted_by_user", "Human control has priority. Stop Computer Use; do not retry until the user explicitly allows agents again.");
+      throw new ComputerUseToolError("aborted_by_user", "Human control has priority. Stop Computer Use; wait until the user exits Remote Control or allows agents. Do not retry while blocked.");
     }
   }
   async beforeAgent(action: AgentAction): Promise<void> {
@@ -90,7 +116,8 @@ export class ControlCoordinator {
     this.generation++;
     this.change({ mode: "idle", callerId: null, agentId: null, label: "Ready", tool: null, app: null, since: Date.now() });
   }
-  async takeOver(): Promise<RemoteControlState> {
+  async takeOver(viewerId?: string): Promise<RemoteControlState> {
+    this.assertViewer(viewerId);
     this.generation++;
     this.change({ humanPriority: true, mode: this.state.paused ? "paused" : "human", callerId: null, agentId: null,
       label: "Human control", tool: null, app: null, since: Date.now() });
@@ -104,13 +131,15 @@ export class ControlCoordinator {
     await handoff;
     return this.snapshot();
   }
-  async runHuman<T>(run: () => Promise<T>): Promise<T> {
+  async runHuman<T>(run: () => Promise<T>, viewerId?: string): Promise<T> {
+    this.assertViewer(viewerId);
     if (this.stopped || this.state.paused) throw new Error("Remote control is paused");
     if (this.state.mode === "agent") throw new Error("An agent is controlling the computer. Use Take over first.");
     const handoff = !this.state.humanPriority ? this.takeOver() : this.handoff;
     const generation = this.generation;
     await handoff;
     return this.serial(async () => {
+      this.assertViewer(viewerId);
       if (this.stopped || this.state.paused || !this.state.humanPriority || generation !== this.generation) throw new Error("This human input belongs to a revoked control session");
       return run();
     });
@@ -131,19 +160,26 @@ export class ControlCoordinator {
       if (this.state.mode !== "agent") await release();
     });
   }
-  async allowAgents(): Promise<RemoteControlState> {
+  async allowAgents(guard: () => boolean = () => true): Promise<RemoteControlState> {
     if (this.stopped || this.state.paused) throw new Error("Resume remote control before allowing agents");
     if (this.state.mode === "agent") throw new Error("Take over before changing agent access");
     const generation = this.generation;
     await this.handoff;
-    // Keep the human latch set until every earlier input has drained and all keys are up.
-    await this.serial(() => this.deps.releaseInput());
-    if (this.state.paused || generation !== this.generation) throw new Error("Control changed while allowing agents");
-    await this.save({ ...this.state, paused: false, humanPriority: false });
-    if (generation !== this.generation || this.state.paused) throw new Error("Control changed while saving agent access");
-    this.generation++;
-    this.change({ humanPriority: false, mode: "idle", callerId: null, agentId: null, label: "Ready", tool: null, app: null, noticeError: null, since: Date.now() });
-    return this.snapshot();
+    const check = () => {
+      if (this.stopped || this.state.paused || this.state.mode === "agent" || generation !== this.generation || !guard()) throw new Error("Control changed while allowing agents");
+    };
+    // Drain input and commit permission under one queue lease; late input cannot slip into the gap.
+    return this.serial(async () => {
+      check();
+      await this.deps.releaseInput();
+      check();
+      await this.save({ ...this.state, paused: false, humanPriority: false });
+      try { check(); }
+      catch (error) { await this.save(); throw error; }
+      this.generation++;
+      this.change({ humanPriority: false, mode: "idle", callerId: null, agentId: null, label: "Ready", tool: null, app: null, noticeError: null, since: Date.now() });
+      return this.snapshot();
+    });
   }
   async pause(paused: boolean): Promise<RemoteControlState> {
     this.generation++;

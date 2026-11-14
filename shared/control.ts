@@ -16,5 +16,8 @@ export const remoteControlState = z.object({
 });
 export type RemoteControlState = z.infer<typeof remoteControlState>;
 export const ownershipRpc = defineRpc({ name: "remote-control.state", input: z.object({}), output: remoteControlState });
-export const takeoverRpc = defineRpc({ name: "remote-control.takeover", input: z.object({}), output: remoteControlState });
+export const viewerIdSchema = z.string().uuid();
+export const viewerOpenRpc = defineRpc({ name: "remote-control.viewer-open", input: z.object({}), output: z.object({ viewerId: viewerIdSchema }) });
+export const viewerCloseRpc = defineRpc({ name: "remote-control.viewer-close", input: z.object({ viewerId: viewerIdSchema }), output: remoteControlState });
+export const takeoverRpc = defineRpc({ name: "remote-control.takeover", input: z.object({ viewerId: viewerIdSchema.optional() }), output: remoteControlState });
 export const allowAgentsRpc = defineRpc({ name: "remote-control.allow-agents", input: z.object({}), output: remoteControlState });

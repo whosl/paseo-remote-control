@@ -168,6 +168,7 @@ export function useInputQueue(
   /** Stable identity from the image actually being viewed. */
   expectedDisplayKey?: string,
   enabled = true,
+  viewerId?: string,
 ) {
   const onPointerDisplayRef = useRef(onPointerDisplay);
   onPointerDisplayRef.current = onPointerDisplay;
@@ -184,17 +185,19 @@ export function useInputQueue(
   const sending = useRef(false);
   const keyRef = useRef(expectedDisplayKey);
   const enabledRef = useRef(enabled);
+  const viewerRef = useRef(viewerId);
   const generation = useRef(0);
   const releasedGeneration = useRef(0);
   const mounted = useRef(true);
   // Invalidate synchronously so an in-flight reply cannot flush old events onto a new screen.
-  if (displayRef.current !== displayId || keyRef.current !== expectedDisplayKey || enabledRef.current !== enabled) {
+  if (displayRef.current !== displayId || keyRef.current !== expectedDisplayKey || enabledRef.current !== enabled || viewerRef.current !== viewerId) {
     queue.current = [];
     generation.current++;
   }
   displayRef.current = displayId;
   keyRef.current = expectedDisplayKey;
   enabledRef.current = enabled;
+  viewerRef.current = viewerId;
 
   const flush = useCallback(async () => {
     if (sending.current) return;
@@ -224,7 +227,7 @@ export function useInputQueue(
         const batchGeneration = generation.current;
         try {
           const requested = displayRef.current;
-          const result = await inputRef.current({ display: requested, expectedDisplayKey: keyRef.current, events });
+          const result = await inputRef.current({ display: requested, expectedDisplayKey: keyRef.current, ...(viewerRef.current ? { viewerId: viewerRef.current } : {}), events });
           if (batchGeneration !== generation.current) continue;
           // A batch that went through means any earlier error (such as "paused") no longer applies.
           onErrorRef.current(null);
@@ -254,7 +257,7 @@ export function useInputQueue(
   }, [flush]);
 
   // Initial setup has no pending release. Subsequent target/control changes also flush when idle.
-  useEffect(() => { void flush(); }, [displayId, expectedDisplayKey, enabled, flush]);
+  useEffect(() => { void flush(); }, [displayId, expectedDisplayKey, enabled, viewerId, flush]);
 
   return useCallback(
     (event: ScreenInputEvent) => {

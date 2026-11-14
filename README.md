@@ -20,10 +20,16 @@ paseo-computer-use, with a shared input backend and human-priority control autho
   refused at the server, not just disabled visually. Choose **Take over** first.
 - Taking over cancels active agent tools, invalidates queued actions, waits for
   actual input cleanup and releases held buttons/keys. Human priority remains
-  latched, including after plugin reload. A small toolbar shield indicates human
-  priority without a persistent overlay. **Screen settings > Control ownership >
-  Allow agents** explicitly grants access again; an interrupted agent needs a new
-  turn before retrying. Opening settings or hiding controls never grants access.
+  latched while a Remote Control page remains open. A small toolbar shield indicates
+  human priority without a persistent overlay. Leaving the last page automatically
+  drains input, releases held keys and returns agent access. **Pause all** remains
+  latched and another open page prevents automatic return. A rapid reopen cancels
+  the handoff. **Screen settings > Control ownership > Allow agents** remains a
+  manual override; an interrupted agent still needs a new turn before retrying.
+  Opening settings, changing language or hiding controls never grants access.
+  If an exit cannot be confirmed (for example, force-quitting the app or losing the
+  connection), the host fails closed and retains human priority; the manual override
+  remains available. Merely going into the background does not close the page.
 - Your first ordinary viewer input also reserves human control. Multiple paired
   human viewers share this human-priority state; they are not separate exclusive
   per-device leases.
@@ -175,8 +181,8 @@ login session, not a separate session or a guarantee of independent human/agent 
 - Physical displays have priority. With a physical monitor available, fallback does
   not activate another screen. Unknown or failed topology queries never mean headless.
 - Verified absence is debounced before enabling only the provisioned virtual device.
-  Switching reserves human control and releases agent input. Agents require explicit
-  permission again afterwards.
+  Switching reserves human control and releases agent input. Agent access returns
+  when the last viewer exits, or via the explicit permission action.
 - When a physical display returns, the viewer offers **Switch back** and keeps the
   current virtual picture until you confirm. The physical display must already be
   active in Windows. Window movement and capture are verified before disabling the
@@ -192,7 +198,8 @@ for the pinned driver, installation transaction, rollback and GPU-update caution
 Niri has no global physical Escape/shake interception or automatic same-window
 human-activity detector. Use the host notice, viewer takeover/pause controls, or
 Paseo Stop. macOS retains its native helper's existing stop and overlay behavior.
-Human priority prevents future agents from acquiring input until explicitly allowed.
+Human priority prevents future agents from acquiring input until the last viewer
+confirms exit or the user explicitly allows agents. Unconfirmed exits fail closed.
 
 This is coordination for trusted plugins/agents, not a security boundary against
 code running as the desktop user. Such code can invoke operating-system input tools

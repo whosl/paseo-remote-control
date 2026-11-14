@@ -12,7 +12,7 @@ const source = readFileSync(new URL("../client/viewer/use-screen.ts", import.met
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 type RpcName = "input" | "release";
-type InputArgs = { display?: number; expectedDisplayKey?: string; events?: ScreenInputEvent[] };
+type InputArgs = { display?: number; expectedDisplayKey?: string; viewerId?: string; events?: ScreenInputEvent[] };
 type Reply = { handled?: number; pointerDisplay?: number };
 type EffectSlot = { deps: readonly unknown[]; cleanup?: () => void };
 
@@ -74,9 +74,9 @@ function setup() {
   return {
     calls, errors, pointerDisplays,
     names: () => calls.map((call) => call.name),
-    render(key = "physical-A", enabled = true, displayId = 7) {
+    render(key = "physical-A", enabled = true, displayId = 7, viewerId?: string) {
       cursor = 0;
-      const send = api.useInputQueue(displayId, (error) => errors.push(error), (id) => pointerDisplays.push(id), key, enabled);
+      const send = api.useInputQueue(displayId, (error) => errors.push(error), (id) => pointerDisplays.push(id), key, enabled, viewerId);
       while (effects.length) effects.shift()!();
       return send;
     },
@@ -101,6 +101,15 @@ const down: ScreenInputEvent = { type: "down", x: 0.5, y: 0.5, button: "left" };
 const up: ScreenInputEvent = { type: "up", x: 0.5, y: 0.5, button: "left" };
 
 describe("viewer input queue release ordering", () => {
+  it("tags input with its page and releases before a new page sends input", async () => {
+    const h = setup();
+    h.render("physical-A", true, 7, "page-A")(down);
+    expect(h.calls[0]!.args.viewerId).toBe("page-A");
+    h.render("physical-A", true, 7, "page-B")(up);
+    await h.resolve("input"); expect(h.names()).toEqual(["input", "release"]);
+    await h.resolve("release"); expect(h.calls[2]!.args.viewerId).toBe("page-B");
+    await h.resolve("input");
+  });
   it("does not release during initial setup or unchanged renders", () => {
     const h = setup();
     h.render();

@@ -6,7 +6,8 @@ cursor-follow, an on-demand keyboard and clipboard, and local click feedback.
 
 One control authority governs viewer and MCP input. Agent control shows a live
 identity/action notice. Take over cancels agent work and queued input, releases
-held keys and reserves control for humans until explicitly allowed again. Watching
+held keys and reserves control for humans until the last viewer exits or explicitly
+allows agents again. A paused host remains paused; unconfirmed exits fail closed. Watching
 alone does not claim control. Linux/Niri and Windows additionally display a local
 notice with takeover and pause buttons; if that notice cannot be shown, agent input
 is refused. The agent tools retain application restrictions and browser opt-in.

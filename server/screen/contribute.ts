@@ -93,12 +93,12 @@ export default function contribute(server: PluginServerContext, control: Control
       const result = await (await inputHelper()).request<{ handled: number; pointerDisplay?: number }>("input", request);
       held.confirmed(request.events);
       return result;
-    });
+    }, request.viewerId);
   });
   // Read on the input helper so it runs after any copy shortcut queued before it.
-  server.handle(clipboardRpc, async () => {
+  server.handle(clipboardRpc, async ({ viewerId }) => {
     await assertControlAllowed();
-    return control.runHuman(async () => (await inputHelper()).request("clipboard"));
+    return control.runHuman(async () => (await inputHelper()).request("clipboard"), viewerId);
   });
   server.handle(controlStateRpc, () => ({ paused: control.snapshot().paused }));
   server.handle(setControlPausedRpc, async ({ paused }) => {

@@ -15,6 +15,7 @@ import { TouchStage } from "./touch-stage";
 import type { InputMode } from "./touch-controller";
 import { QUALITIES, useFrames, useInputQueue } from "./use-screen";
 import { formatBandwidth } from "./frame-metrics";
+import { useViewerSession } from "./use-viewer-session";
 import { useDirectVideo, useFullscreen } from "./web";
 import { useWebInput } from "./web-input";
 import { useOwnership } from "../ownership";
@@ -29,6 +30,7 @@ export function RemoteScreen(props: PluginScreenProps) {
 }
 
 function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled }: PluginScreenProps & { feedbackEnabled: boolean; setFeedbackEnabled(value: boolean): void }) {
+  const viewer = useViewerSession(host.id);
   const { t } = useRemoteTranslation();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const queryClient = useQueryClient();
@@ -99,13 +101,13 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const frameMatchesDisplay = !!frames.uri && !!frames.display && frames.display.id === display?.id
     && (display?.stableKey === undefined || frames.display.stableKey === display.stableKey)
     && (!fallback?.selectedKey || frames.display.stableKey === fallback.selectedKey);
-  const ownership = useOwnership(host.id);
+  const ownership = useOwnership(host.id, viewer.viewerId);
   const hostControlBase = useControlPause(host.id);
   const hostControl = { ...hostControlBase, paused: ownership.state?.paused ?? hostControlBase.paused };
   useEffect(() => { if (!hostControl.paused) setInputError(null); }, [hostControl.paused]);
-  const controlling = ((direct.active && !managedSelection) || frameMatchesDisplay) && !fallbackChange.isPending && control && !paused && lastGood.current?.accessibility === true && !hostControl.paused && ownership.known && ownership.state?.mode !== "agent" && !ownership.changing;
-  const send = useInputQueue(display?.id, setInputError, chooseDisplay, frames.display?.stableKey, controlling);
-  const clipboard = useHostClipboard(controlling && ownership.state?.humanPriority === true);
+  const controlling = !!viewer.viewerId && ((direct.active && !managedSelection) || frameMatchesDisplay) && !fallbackChange.isPending && control && !paused && lastGood.current?.accessibility === true && !hostControl.paused && ownership.known && ownership.state?.mode !== "agent" && !ownership.changing;
+  const send = useInputQueue(display?.id, setInputError, chooseDisplay, frames.display?.stableKey, controlling, viewer.viewerId);
+  const clipboard = useHostClipboard(controlling && ownership.state?.humanPriority === true, viewer.viewerId);
   const pasteOnHost = useCallback((text: string, shift = false) => {
     if (!controlling) return;
     send(shift ? { type: "paste", text, shift } : { type: "paste", text });
@@ -125,7 +127,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const compact = layout.compact || (stage.width > 0 && stage.width < 700) || short;
   const tiny = stage.width > 0 && stage.width < 350;
   const toggleFullscreen = () => { void fullscreen.toggle().catch((error) => setInputError(`Fullscreen: ${String(error)}`)); };
-  const message = localizeRemoteText(inputError ?? ownership.error ?? (direct.active ? null : frames.error) ?? clipboard.message, t);
+  const message = localizeRemoteText(inputError ?? viewer.error ?? ownership.error ?? (direct.active ? null : frames.error) ?? clipboard.message, t);
   const permissionMissing = !!status.data && (!status.data.supported || !!status.data.error || !status.data.screenRecording || !status.data.accessibility);
   const fps = paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1);
   const bandwidth = paused ? "—" : formatBandwidth(direct.active ? direct.kbps : frames.kbps);

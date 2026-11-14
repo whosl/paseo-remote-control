@@ -11,7 +11,7 @@ import { WindowsPort } from "./server/computer-use-mcp/windows/port";
 import contributeScreen from "./server/screen/contribute";
 import { NiriHelper } from "./server/screen/niri";
 import { readControlPolicy, writeControlPolicy } from "./server/screen/preferences";
-import { allowAgentsRpc, ownershipRpc, takeoverRpc } from "./shared/control";
+import { allowAgentsRpc, ownershipRpc, takeoverRpc, viewerOpenRpc, viewerCloseRpc } from "./shared/control";
 import { displayFallbackRpc } from "./shared/screen/rpc";
 
 export default function contribute(server: PluginServerContext) {
@@ -70,7 +70,9 @@ export default function contribute(server: PluginServerContext) {
     stopControl: async () => { await ready; await control.takeOver(); return { stopped: true }; },
   });
   server.handle(ownershipRpc, async () => { await ready; return control.snapshot(); });
-  server.handle(takeoverRpc, async () => { await ready; return control.takeOver(); });
+  server.handle(viewerOpenRpc, async () => { await ready; return control.openViewer(); });
+  server.handle(viewerCloseRpc, async ({ viewerId }) => { await ready; return control.closeViewer(viewerId); });
+  server.handle(takeoverRpc, async ({ viewerId }) => { await ready; return control.takeOver(viewerId); });
   server.handle(allowAgentsRpc, async () => { await ready; return control.allowAgents(); });
   return async () => {
     await ready.catch(() => {});

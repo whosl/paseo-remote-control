@@ -8,10 +8,12 @@ export const readLocalClipboard = readBrowserClipboard;
  * Mirrors host copies into this client's clipboard (web and desktop clients only).
  * After a copy shortcut is sent, the host clipboard is checked a few times because apps copy asynchronously.
  */
-export function useHostClipboard(active: boolean) {
+export function useHostClipboard(active: boolean, viewerId?: string) {
   const read = useRpc(clipboardRpc);
   const readRef = useRef(read);
   readRef.current = read;
+  const viewerRef = useRef(viewerId);
+  viewerRef.current = viewerId;
   const known = useRef<number | null>(null);
   const pasted = useRef<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -19,7 +21,7 @@ export function useHostClipboard(active: boolean) {
 
   useEffect(() => {
     if (!active || !supported) return;
-    readRef.current({}).then(
+    readRef.current(viewerRef.current ? { viewerId: viewerRef.current } : {}).then(
       (clipboard) => (known.current = clipboard.changeCount),
       () => undefined,
     );
@@ -36,7 +38,7 @@ export function useHostClipboard(active: boolean) {
     async (onlyIfChanged: boolean): Promise<boolean> => {
       if (!supported) return false;
       try {
-        const clipboard = await readRef.current({});
+        const clipboard = await readRef.current(viewerRef.current ? { viewerId: viewerRef.current } : {});
         if (onlyIfChanged && clipboard.changeCount === known.current) return false;
         known.current = clipboard.changeCount;
         // A change that is only our own paste landing is not a host copy; keep waiting for the real one.

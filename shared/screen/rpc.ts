@@ -161,7 +161,7 @@ export const releaseInputRpc = defineRpc({ name: "screen.release-input", input: 
 
 export const inputRpc = defineRpc({
   name: "screen.input",
-  input: z.object({ display: z.number().optional(), expectedDisplayKey: z.string().max(1024).optional(), events: z.array(inputEventSchema).max(200) }),
+  input: z.object({ display: z.number().optional(), expectedDisplayKey: z.string().max(1024).optional(), viewerId: z.string().uuid().optional(), events: z.array(inputEventSchema).max(200) }),
   output: z.object({
     handled: z.number(),
     /** Display the pointer ended on, which differs from `display` after a drag onto another display. */
@@ -172,7 +172,7 @@ export const inputRpc = defineRpc({
 /** The host's plain-text clipboard. `changeCount` increases whenever anything on the host copies. */
 export const clipboardRpc = defineRpc({
   name: "screen.clipboard",
-  input: z.object({}),
+  input: z.object({ viewerId: z.string().uuid().optional() }),
   output: z.object({ changeCount: z.number(), text: z.string().optional() }),
 });
 
