@@ -4,6 +4,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import type { ScreenInputEvent } from "../shared/screen/rpc";
 import type { useInputQueue } from "../client/viewer/use-screen";
+import { FrameMetrics } from "../client/viewer/frame-metrics";
 
 // Execute the production hook with deterministic hooks/RPCs, without loading React Native,
 // a browser, or native modules. Transpilation is in memory and creates no generated files.
@@ -60,6 +61,7 @@ function setup() {
     "@getpaseo/plugin/client": { useRpc: (name: RpcName) => rpcs[name] },
     "../../shared/screen/rpc": { inputRpc: "input", releaseInputRpc: "release" },
     "../../shared/screen/capture-policy": {},
+    "./frame-metrics": { FrameMetrics },
   };
   runInNewContext(code, {
     exports: api,

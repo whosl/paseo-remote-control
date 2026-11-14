@@ -14,6 +14,7 @@ import { isAppleClient, KEY, keyMapping } from "./keys";
 import { TouchStage } from "./touch-stage";
 import type { InputMode } from "./touch-controller";
 import { QUALITIES, useFrames, useInputQueue } from "./use-screen";
+import { formatBandwidth } from "./frame-metrics";
 import { useDirectVideo, useFullscreen } from "./web";
 import { useWebInput } from "./web-input";
 import { useOwnership } from "../ownership";
@@ -126,6 +127,9 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const toggleFullscreen = () => { void fullscreen.toggle().catch((error) => setInputError(`Fullscreen: ${String(error)}`)); };
   const message = localizeRemoteText(inputError ?? ownership.error ?? (direct.active ? null : frames.error) ?? clipboard.message, t);
   const permissionMissing = !!status.data && (!status.data.supported || !!status.data.error || !status.data.screenRecording || !status.data.accessibility);
+  const fps = paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1);
+  const bandwidth = paused ? "—" : formatBandwidth(direct.active ? direct.kbps : frames.kbps);
+  const connectionMode = direct.active ? "WebRTC / H.264" : "Paseo / JPEG";
 
   return (
     <View ref={setRootNode} style={styles.screen}>
@@ -219,6 +223,13 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
             </> : panel === "settings" ? <>
               <Text style={styles.sectionLabel}>{t("qualitySection")}</Text>
               <View style={styles.qualityRow}>{QUALITIES.map((quality, index) => <Pressable key={quality.label} accessibilityRole="button" accessibilityLabel={t("qualityLabel", { quality: t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!) })} accessibilityState={{ selected: index === qualityIndex }} onPress={() => setQualityIndex(index)} style={[styles.quality, index === qualityIndex && styles.selectedRow]}><Text style={styles.rowTitle}>{t((["qualityFast", "qualityBalanced", "qualitySharp"] as const)[index]!)}</Text><Text style={styles.description}>{[t("lessData"), t("everyday"), t("moreDetail")][index]}</Text></Pressable>)}</View>
+              <View style={styles.connectionStats}>
+                <Text accessibilityLabel={t("frameRateLabel", { value: fps })} style={styles.connectionStat}>{`${fps} fps`}</Text>
+                <Text accessibilityLabel={t("bandwidthLabel", { value: bandwidth })} style={styles.connectionStat}>{bandwidth}</Text>
+                {direct.supported && !managedSelection && lastGood.current?.webrtc
+                  ? <Pressable accessibilityRole="button" accessibilityLabel={preferDirect ? t("paseoOnly") : t("tryWebrtc")} accessibilityHint={t("connectionModeLabel", { mode: connectionMode })} onPress={() => setPreferDirect(!preferDirect)}><Text style={[styles.connectionStat, { textDecorationLine: "underline" }]}>{connectionMode}</Text></Pressable>
+                  : <Text accessibilityLabel={t("connectionModeLabel", { mode: connectionMode })} style={styles.connectionStat}>{connectionMode}</Text>}
+              </View>
               <View style={styles.rule} />
               <Text style={styles.sectionLabel}>{t("inputSection")}</Text>
               <View style={styles.qualityRow}>{(["touchscreen", "trackpad"] as InputMode[]).map((mode) => <Pressable key={mode} accessibilityRole="button" accessibilityLabel={t("selectInputMode", { mode: mode === "trackpad" ? t("trackpad") : t("touchscreen") })} accessibilityState={{ selected: inputMode === mode }} onPress={() => setInputMode(mode)} style={[styles.quality, inputMode === mode && styles.selectedRow]}><Icon name={mode === "trackpad" ? "Touchpad" : "Hand"} size={18} color={theme.colors.foreground} /><Text style={styles.rowTitle}>{mode === "trackpad" ? t("trackpad") : t("touchscreen")}</Text></Pressable>)}</View>
@@ -244,11 +255,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
                 {status.data?.windowsTopology?.error ? <Text selectable style={styles.description}>{status.data.windowsTopology.error}</Text> : null}
                 <View style={styles.rule} />
               </> : null}
-              <Text style={styles.sectionLabel}>{t("liveConnection")}</Text>
-              <View style={styles.metrics}><Metric label={direct.active ? t("videoFps") : t("updatesPerSecond")} value={paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1)} styles={styles} /><Metric label={t("roundTrip")} value={direct.active && direct.rttMs === null ? "—" : `${direct.active ? direct.rttMs : frames.latencyMs} ms`} styles={styles} /><Metric label={direct.active ? t("videoRate") : t("frame")} value={direct.active ? `${direct.kbps} kbps` : `${frames.kilobytes} KB`} styles={styles} /></View>
-              <View style={styles.transport}><View style={[styles.dot, { backgroundColor: direct.active ? theme.colors.accent : theme.colors.foregroundMuted }]} /><Text style={styles.rowTitle}>{direct.active ? t("encryptedVideo") : direct.connecting ? t("connectingVideo") : t("paseoFrames")}</Text></View>
-              {direct.supported && !managedSelection && lastGood.current?.webrtc ? <><Action styles={styles} label={preferDirect ? t("paseoOnly") : t("tryWebrtc")} onPress={() => setPreferDirect(!preferDirect)} /><Text style={styles.description}>{t("directVideoHint")}</Text>{direct.reason ? <Text style={styles.description}>{localizeRemoteText(direct.reason, t)}</Text> : null}</> : <Text style={styles.description}>{t("paseoConnectionHint")}</Text>}
-              {hostControl.known ? <><View style={styles.rule} /><Text style={styles.sectionLabel}>{t("hostSafety")}</Text><Text style={styles.description}>{t("hostSafetyHint")}</Text><Action styles={styles} label={hostControl.changing ? t("updating") : hostControl.paused ? t("resumeEveryone") : t("pauseEveryone")} disabled={hostControl.changing} onPress={() => hostControl.setPaused(!hostControl.paused)} /></> : null}
+              {hostControl.known ? <><Text style={styles.sectionLabel}>{t("hostSafety")}</Text><Text style={styles.description}>{t("hostSafetyHint")}</Text><Action styles={styles} label={hostControl.changing ? t("updating") : hostControl.paused ? t("resumeEveryone") : t("pauseEveryone")} disabled={hostControl.changing} onPress={() => hostControl.setPaused(!hostControl.paused)} /></> : null}
               {hostPlatform === "win32" ? <Text style={styles.description}>{t("windowsExperimental")}</Text> : null}
             </> : <ClipboardPanel styles={styles} enabled={controlling} onPaste={pasteOnHost} onRead={() => void pasteLocalClipboard()} onCopy={clipboard.supported ? clipboard.pull : undefined} />}
           </ScrollView>
@@ -270,9 +277,6 @@ function displayKindLabel(display: ScreenDisplay, hostPlatform: string, t: Remot
 
 function Action({ styles, label, disabled, onPress }: { styles: Styles; label: string; disabled?: boolean; onPress(): void }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label} disabled={disabled} accessibilityState={{ disabled: !!disabled }} onPress={onPress} style={[styles.action, disabled && { opacity: 0.4 }]}><Text style={styles.actionText}>{label}</Text></Pressable>;
-}
-function Metric({ styles, label, value }: { styles: Styles; label: string; value: string }) {
-  return <View style={{ flex: 1, gap: 5 }}><Text style={styles.metricValue}>{value}</Text><Text style={styles.metricLabel}>{label}</Text></View>;
 }
 function ClipboardPanel({ styles, enabled, onPaste, onRead, onCopy }: { styles: Styles; enabled: boolean; onPaste(text: string, shift?: boolean): void; onRead(): void; onCopy?: () => void }) {
   const { t } = useRemoteTranslation();
@@ -373,10 +377,8 @@ function createStyles({ colors: c }: PluginTheme) {
     sectionLabel: { color: c.foregroundMuted, fontSize: 10, fontWeight: "600", letterSpacing: 1.2 },
     qualityRow: { flexDirection: "row", gap: 6 },
     quality: { flex: 1, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingVertical: 12, alignItems: "center", gap: 5 },
-    metrics: { flexDirection: "row", gap: 8, paddingVertical: 3 },
-    transport: { flexDirection: "row", alignItems: "center", gap: 8 },
-    metricValue: { color: c.foreground, fontSize: 17, fontWeight: "500", fontVariant: ["tabular-nums"] },
-    metricLabel: { color: c.foregroundMuted, fontSize: 8, letterSpacing: 0.8 },
+    connectionStats: { flexDirection: "row", flexWrap: "wrap", columnGap: 12, rowGap: 3 },
+    connectionStat: { color: c.foregroundMuted, fontSize: 11, lineHeight: 17, fontVariant: ["tabular-nums"] },
     rule: { height: 1, backgroundColor: c.border, marginVertical: 3 },
     action: { backgroundColor: c.surface2, borderWidth: 1, borderColor: c.border, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 11, alignItems: "center" },
     actionText: { color: c.foreground, fontSize: 12, fontWeight: "500" },

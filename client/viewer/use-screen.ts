@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, PixelRatio } from "react-native";
 import { frameRpc, inputRpc, releaseInputRpc, type ScreenDisplay, type ScreenInputEvent } from "../../shared/screen/rpc";
 import { captureFps } from "../../shared/screen/capture-policy";
+import { FrameMetrics } from "./frame-metrics";
 
 export interface Quality {
   label: string;
@@ -22,8 +23,10 @@ export interface FrameState {
   uri: string | null;
   display: ScreenDisplay | null;
   error: string | null;
-  /** Frame replies per second, changed or not. */
+  /** Newly presented JPEG images per second, over the last three seconds. */
   fps: number;
+  /** Received base64 image payload in kilobits per second; not link capacity. */
+  kbps: number;
   /** Median request-to-reply time, excluding deliberate changed-frame waiting. */
   latencyMs: number;
   kilobytes: number;
@@ -56,7 +59,7 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
   const frameRef = useRef(frame);
   frameRef.current = frame;
   const [state, setState] = useState<Omit<FrameState, "wake">>({
-    uri: null, display: null, error: null, fps: 0, latencyMs: 0, kilobytes: 0, locked: false, asleep: false,
+    uri: null, display: null, error: null, fps: 0, kbps: 0, latencyMs: 0, kilobytes: 0, locked: false, asleep: false,
   });
   // Set when the viewer opens or the user asks; the next frame request wakes a sleeping host.
   // Ordinary polling never wakes it, so an open viewer does not stop the host from sleeping or locking.
@@ -81,7 +84,7 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
     let nextSequence = 0;
     let appliedSequence = -1;
     const timers = new Set<ReturnType<typeof setTimeout>>();
-    const replies: number[] = [];
+    const metrics = new FrameMetrics();
     const latencies: number[] = [];
     let extraLane = !continuous;
     let renderedHash: string | undefined;
@@ -104,8 +107,9 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
         const result = await frameRef.current({ display: displayId, maxWidth, quality: quality.quality, since, wake: wakeHost, ...(continuous ? { waitMs: 250 } : {}) });
         if (cancelled) return;
         const now = Date.now();
-        replies.push(now);
-        while (replies.length > 0 && replies[0]! < now - 3000) replies.shift();
+        const changed = sequence > appliedSequence && !!result.jpeg && result.hash !== renderedHash;
+        // Count every received payload, even duplicate/out-of-order images; only new images add FPS.
+        const rates = metrics.record(now, result.jpeg?.length ?? 0, changed);
         const roundTrip = Math.max(0, now - startedAt - (result.waitedMs ?? 0));
         latencies.push(roundTrip);
         if (latencies.length > 10) latencies.shift();
@@ -115,7 +119,6 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
           // "Unchanged" only means equal to the hash this request was sent with. Another reply may have
           // changed the picture since, so only a reply carrying image data moves `since`; a stale
           // "unchanged" leaves it alone and the next request fetches the real frame.
-          const changed = !!result.jpeg && result.hash !== renderedHash;
           if (result.jpeg) { since = result.hash; renderedHash = result.hash; }
           setState((previous) => ({
             uri: changed ? `data:image/jpeg;base64,${result.jpeg}` : previous.uri,
@@ -123,11 +126,13 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
             display: result.jpeg ? result.display ?? null : previous.display,
             asleep: result.asleep === true,
             error: null,
-            fps: replies.length / 3,
+            ...rates,
             latencyMs: median(latencies),
             kilobytes: result.jpeg && result.bytes ? Math.round(result.bytes / 1024) : previous.kilobytes,
             locked: result.locked,
           }));
+        } else {
+          setState(previous => ({ ...previous, ...rates }));
         }
         const streaming = continuous && result.captureMode === "native-stream";
         delay = Math.max(0, (streaming ? 1000 / captureFps(quality.quality) : quality.intervalMs) - (now - startedAt));
@@ -135,7 +140,7 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
         if (!extraLane && (!streaming || (latencies.length >= 3 && median(latencies) >= 100))) { extraLane = true; schedule(50); }
       } catch (error) {
         if (cancelled) return;
-        setState((previous) => ({ ...previous, error: error instanceof Error ? error.message : String(error), fps: 0 }));
+        setState((previous) => ({ ...previous, error: error instanceof Error ? error.message : String(error), fps: 0, kbps: 0 }));
         delay = 2000;
       }
       if (!cancelled) schedule(delay);
@@ -148,7 +153,7 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
     };
   }, [active, displayId, displayKey, quality, maxWidth, continuous]);
 
-  return { ...state, wake };
+  return { ...state, fps: active ? state.fps : 0, kbps: active ? state.kbps : 0, wake };
 }
 
 /**
