@@ -13,6 +13,11 @@
 #include <libavutil/hwcontext.h>
 #include <libavutil/opt.h>
 
+/* FFmpeg 7+ moved the public profile constants to the AV_ prefix. */
+#ifndef AV_PROFILE_H264_CONSTRAINED_BASELINE
+#define AV_PROFILE_H264_CONSTRAINED_BASELINE FF_PROFILE_H264_CONSTRAINED_BASELINE
+#endif
+
 typedef struct {
     AVBufferRef *device;
     AVCodecContext *codec;
@@ -46,7 +51,7 @@ static int configure(Encoder *e, int width, int height, int bitrate) {
     c->time_base = (AVRational){1, 90000}; c->framerate = (AVRational){30, 1};
     c->sample_aspect_ratio = (AVRational){1, 1}; c->pix_fmt = AV_PIX_FMT_VAAPI;
     c->gop_size = 60; c->max_b_frames = 0; c->refs = 1;
-    c->profile = FF_PROFILE_H264_CONSTRAINED_BASELINE;
+    c->profile = AV_PROFILE_H264_CONSTRAINED_BASELINE;
     int blocks = ((width + 15) / 16) * ((height + 15) / 16);
     c->level = blocks <= 3600 ? 31 : blocks <= 8192 ? 40 : blocks <= 22080 ? 50 : 52;
     c->flags |= AV_CODEC_FLAG_LOW_DELAY;
