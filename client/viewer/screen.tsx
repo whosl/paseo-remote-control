@@ -4,7 +4,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PixelRatio, Platform, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from "react-native";
-import { chooseDisplayRpc, displayFallbackRpc, requestPermissionsRpc, statusRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenDisplay, type ScreenInputEvent, type ScreenModifier, type ScreenStatus } from "../../shared/screen/rpc";
+import { chooseDisplayRpc, displayFallbackRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenDisplay, type ScreenInputEvent, type ScreenModifier, type ScreenStatus } from "../../shared/screen/rpc";
 import { readLocalClipboard, useHostClipboard } from "./clipboard";
 import { useControlPause } from "./control";
 import { chrome, Control, Key } from "./controls";
@@ -49,6 +49,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
     },
   });
   const offerVideo = useRpc(videoOfferRpc);
+  const configureVideo = useRpc(videoConfigRpc);
   const pingVideo = useRpc(videoPingRpc);
   const stopVideo = useRpc(videoStopRpc);
   const [preferDirect, setPreferDirect] = useState(true);
@@ -98,8 +99,8 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const directEnabled = canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true;
   const videoWidth = Math.max(320, Math.min(quality.maxWidth, wanted));
   const videoFps = [30, 24, 15][qualityIndex]!;
-  const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { offer: offerVideo, ping: pingVideo, stop: stopVideo });
-  const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused);
+  const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo });
+  const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused);
   const direct = isWeb ? browserDirect : nativeDirect;
   const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true, display?.stableKey, lastGood.current?.platform);
   const frameAspect = frames.display ? frames.display.width / frames.display.height : null;
@@ -137,7 +138,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const permissionMissing = !!status.data && (!status.data.supported || !!status.data.error || !status.data.screenRecording || !status.data.accessibility);
   const fps = paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1);
   const bandwidth = paused ? "—" : formatBandwidth(direct.active ? direct.kbps : frames.kbps);
-  const connectionMode = direct.active ? "WebRTC / H.264" : "Paseo / JPEG";
+  const connectionMode = direct.active ? direct.relay === true ? t("webrtcRelay") : direct.relay === false ? t("webrtcDirect") : "WebRTC / H.264" : "Paseo / JPEG";
   const agentActive = ownership.state?.mode === "agent";
 
   return (

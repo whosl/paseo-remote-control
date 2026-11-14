@@ -32,8 +32,10 @@ automatic changes, and disabling automation keeps the only working screen alive.
 Viewing uses the existing Paseo connection with optional encrypted direct H.264
 video in supported browsers and Android clients that include Paseo's WebView.
 Android reuses that installed component; unavailable or failed video falls back
-to JPEG. iOS uses JPEG. Direct connections have no configured STUN/TURN service;
-unreachable video falls back to JPEG. Agent screenshots and tool results reach the
+to JPEG. iOS uses JPEG. A host administrator can configure STUN and authenticated
+TURN for outside-network viewing. Direct paths are preferred, and the picture
+settings distinguish direct and relayed video. Without a reachable path, viewing
+falls back to JPEG. Agent screenshots and tool results reach the
 configured model provider. Clipboard paste can replace host text. This controls
 real apps and is a trusted-code coordination mechanism, not an operating-system
 sandbox. Niri and Windows do not have a global physical Escape stop hook.

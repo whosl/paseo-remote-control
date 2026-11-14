@@ -47,6 +47,8 @@ export function useFullscreen(node: unknown) {
   return { active, supported, toggle };
 }
 
+import type { VideoIceConfiguration } from "../../shared/screen/rpc";
+
 interface Codec { mimeType: string }
 interface Description { type: "offer" | "answer"; sdp: string }
 interface Peer {
@@ -59,9 +61,10 @@ interface Peer {
   createOffer(): Promise<Description>;
   setLocalDescription(description: Description): Promise<void>;
   setRemoteDescription(description: Description): Promise<void>;
+  setConfiguration(configuration: VideoIceConfiguration): void;
   addEventListener(type: string, listener: () => void): void;
   removeEventListener(type: string, listener: () => void): void;
-  getStats(): Promise<{ forEach(fn: (report: Record<string, unknown>) => void): void }>;
+  getStats(): Promise<{ get(id: string): Record<string, unknown> | undefined; forEach(fn: (report: Record<string, unknown>) => void): void }>;
   close(): void;
 }
 interface Video {
@@ -81,16 +84,17 @@ interface Video {
 }
 interface VideoContainer { ownerDocument: { createElement(tag: "video"): Video; createElement(tag: "canvas"): SnapshotCanvas }; appendChild(video: Video): void }
 interface SnapshotCanvas { width: number; height: number; getContext(kind: string): { drawImage(video: Video, x: number, y: number): void } | null; toDataURL(type: string, quality: number): string }
-declare const RTCPeerConnection: new (configuration: { iceServers: never[] }) => Peer;
+declare const RTCPeerConnection: new (configuration: VideoIceConfiguration) => Peer;
 declare const RTCRtpReceiver: { getCapabilities(kind: string): { codecs: Codec[] } | null };
 declare const MediaStream: new (tracks: unknown[]) => unknown;
 
 export interface DirectVideoSignalling {
+  config?(): Promise<VideoIceConfiguration>;
   offer(input: { display?: number; maxWidth: number; fps: number; sdp: string }): Promise<{ session: string; sdp: string }>;
   ping(input: { session: string }): Promise<unknown>;
   stop(input: { session: string }): Promise<unknown>;
 }
-const initialVideo = { active: false, connecting: false, fps: 0, rttMs: null as number | null, kbps: 0, reason: null as string | null, still: null as string | null };
+const initialVideo = { active: false, connecting: false, fps: 0, rttMs: null as number | null, kbps: 0, relay: null as boolean | null, reason: null as string | null, still: null as string | null };
 
 /** Browser media; Android uses native-video and both retain the portable JPEG fallback. */
 export function useDirectVideo(node: unknown, enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling) {
@@ -104,7 +108,7 @@ export function useDirectVideo(node: unknown, enabled: boolean, display: number 
     if (!supported || !enabled || !foreground || !node || typeof node !== "object" || !("appendChild" in node)) { setState((previous) => ({ ...initialVideo, still: previous.still })); return; }
     const container = node as VideoContainer;
     let pc: Peer;
-    try { pc = new RTCPeerConnection({ iceServers: [] }); }
+    try { pc = new RTCPeerConnection({ iceServers: [], iceTransportPolicy: "all" }); }
     catch { setState({ ...initialVideo, reason: "Direct video is disabled in this browser; using Paseo frames." }); return; }
     const video = container.ownerDocument.createElement("video");
     video.muted = true; video.autoplay = true; video.playsInline = true;
@@ -148,13 +152,19 @@ export function useDirectVideo(node: unknown, enabled: boolean, display: number 
       else if (pc.connectionState === "disconnected") disconnected = setTimeout(() => end("Direct video disconnected; using Paseo frames."), 2500);
     };
     const start = async () => {
+      if (rpc.current.config) {
+        const configuration = await rpc.current.config();
+        if (closed) return;
+        pc.setConfiguration(configuration);
+      }
       const transceiver = pc.addTransceiver("video", { direction: "recvonly" });
       const codecs = RTCRtpReceiver.getCapabilities("video")?.codecs.filter((codec) => codec.mimeType.toLowerCase() === "video/h264") ?? [];
       if (!codecs.length) throw new Error("H.264 decoding is unavailable");
       transceiver.setCodecPreferences?.(codecs);
       await pc.setLocalDescription(await pc.createOffer());
-      if (pc.iceGatheringState !== "complete") await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => { pc.removeEventListener("icegatheringstatechange", gathered); reject(new Error("ICE gathering timed out")); }, 3000);
+      if (pc.iceGatheringState !== "complete") await new Promise<void>((resolve) => {
+        // Send usable candidates even if a blocked ICE server is still being probed.
+        const timer = setTimeout(() => { pc.removeEventListener("icegatheringstatechange", gathered); resolve(); }, 5000);
         const gathered = () => { if (pc.iceGatheringState === "complete") { clearTimeout(timer); pc.removeEventListener("icegatheringstatechange", gathered); resolve(); } };
         pc.addEventListener("icegatheringstatechange", gathered); gathered();
       });
@@ -162,18 +172,24 @@ export function useDirectVideo(node: unknown, enabled: boolean, display: number 
       const answer = await rpc.current.offer({ display, maxWidth, fps, sdp: pc.localDescription!.sdp });
       session = answer.session;
       if (closed) { void stop({ session }).catch(() => {}); return; }
-      firstFrame = setTimeout(() => end("Direct video did not arrive; using Paseo frames."), 5000);
+      firstFrame = setTimeout(() => end("Direct video did not arrive; using Paseo frames."), 8000);
       await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       heartbeat = setInterval(() => { if (session) void rpc.current.ping({ session }).catch(() => end("Video session ended; using Paseo frames.")); }, 3000);
       statsTimer = setInterval(() => { void pc.getStats().then((reports) => {
         if (closed) return;
-        let frames = 0, bytes = 0, rttMs: number | null = null;
+        let frames = 0, bytes = 0, rttMs: number | null = null, relay: boolean | null = null;
+        let selected: unknown;
+        reports.forEach(report => { if (report.type === "transport" && report.selectedCandidatePairId) selected = report.selectedCandidatePairId; });
         reports.forEach((report) => {
           if (report.type === "inbound-rtp" && report.kind === "video") { frames += Number(report.framesDecoded ?? 0); bytes += Number(report.bytesReceived ?? 0); }
           if (report.type === "candidate-pair" && report.state === "succeeded" && report.nominated && typeof report.currentRoundTripTime === "number") rttMs = Math.round(report.currentRoundTripTime * 1000);
+          if (report.type === "candidate-pair" && (selected ? report.id === selected : report.state === "succeeded" && report.nominated)) {
+            const local = reports.get(String(report.localCandidateId)), remote = reports.get(String(report.remoteCandidateId));
+            if (local || remote) relay = local?.candidateType === "relay" || remote?.candidateType === "relay";
+          }
         });
         const at = Date.now();
-        if (last) { const seconds = Math.max(0.001, (at - last.at) / 1000); const previous = last; setState((current) => ({ ...current, fps: Math.max(0, (frames - previous.frames) / seconds), kbps: Math.max(0, Math.round((bytes - previous.bytes) * 8 / seconds / 1000)), rttMs })); }
+        if (last) { const seconds = Math.max(0.001, (at - last.at) / 1000); const previous = last; setState((current) => ({ ...current, fps: Math.max(0, (frames - previous.frames) / seconds), kbps: Math.max(0, Math.round((bytes - previous.bytes) * 8 / seconds / 1000)), rttMs, relay })); }
         last = { at, frames, bytes };
       }).catch(() => {}); }, 1000);
     };

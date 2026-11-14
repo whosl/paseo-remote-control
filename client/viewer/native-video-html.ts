@@ -1,5 +1,7 @@
+import type { VideoIceConfiguration } from "../../shared/screen/rpc";
+
 /** Receive-only WebRTC document for an already installed Android WebView. No remote page or scripts. */
-export function nativeVideoDocument(nonce: string): string {
+export function nativeVideoDocument(nonce: string, configuration: VideoIceConfiguration = { iceServers: [], iceTransportPolicy: "all" }): string {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; media-src blob:; img-src data:; base-uri 'none'; form-action 'none'">
 <style>html,body,video,canvas{margin:0;width:100%;height:100%;overflow:hidden;background:#000}video,canvas{position:absolute;inset:0;object-fit:contain}canvas{display:none}</style></head><body><video muted autoplay playsinline></video><canvas></canvas><script>
@@ -20,7 +22,7 @@ video.onloadeddata=()=>{if(closed||ready)return;ready=true;clearTimeout(timeout)
 video.onerror=()=>fail('Video decoding failed; using Paseo frames.');
 (async()=>{
  if(typeof RTCPeerConnection==='undefined')throw Error('WebRTC is unavailable in this Android WebView.');
- pc=new RTCPeerConnection({iceServers:[]});
+ pc=new RTCPeerConnection(${JSON.stringify(configuration).replace(/</g, "\\u003c")});
  pc.ontrack=event=>{video.srcObject=new MediaStream([event.track]);video.play().catch(fail);};
  pc.onconnectionstatechange=()=>{clearTimeout(disconnected);if(pc.connectionState==='failed')fail('Direct connection unavailable; using Paseo frames.');else if(pc.connectionState==='disconnected')disconnected=setTimeout(()=>fail('Direct video disconnected; using Paseo frames.'),2500);};
  const transceiver=pc.addTransceiver('video',{direction:'recvonly'});
@@ -29,8 +31,8 @@ video.onerror=()=>fail('Video decoding failed; using Paseo frames.');
  transceiver.setCodecPreferences?.(codecs);
  await pc.setLocalDescription(await pc.createOffer());
  if(closed)return;
- if(pc.iceGatheringState!=='complete')await new Promise((resolve,reject)=>{
-  const timer=setTimeout(()=>{pc.removeEventListener('icegatheringstatechange',gathered);reject(Error('ICE gathering timed out'));},3000);
+ if(pc.iceGatheringState!=='complete')await new Promise(resolve=>{
+  const timer=setTimeout(()=>{pc.removeEventListener('icegatheringstatechange',gathered);resolve();},5000);
   const gathered=()=>{if(pc.iceGatheringState==='complete'){clearTimeout(timer);pc.removeEventListener('icegatheringstatechange',gathered);resolve();}};
   pc.addEventListener('icegatheringstatechange',gathered);gathered();
  });
@@ -44,10 +46,13 @@ video.onerror=()=>fail('Video decoding failed; using Paseo frames.');
  }catch{}},40);
  stats=setInterval(async()=>{try{
   const reports=await pc.getStats();if(closed||!ready)return;
-  let frames=0,bytes=0,rttMs=null;reports.forEach(r=>{
+  let frames=0,bytes=0,rttMs=null,relay=null,selected;
+  reports.forEach(r=>{if(r.type==='transport'&&r.selectedCandidatePairId)selected=r.selectedCandidatePairId;});
+  reports.forEach(r=>{
    if(r.type==='inbound-rtp'&&(r.kind==='video'||r.mediaType==='video')){frames+=Number(r.framesDecoded||0);bytes+=Number(r.bytesReceived||0);}
    if(r.type==='candidate-pair'&&r.state==='succeeded'&&r.nominated&&typeof r.currentRoundTripTime==='number')rttMs=Math.round(r.currentRoundTripTime*1000);
-  });const at=performance.now();if(previous){const seconds=Math.max(.001,(at-previous.at)/1000);emit({type:'stats',fps:Math.max(0,(frames-previous.frames)/seconds),kbps:Math.max(0,(bytes-previous.bytes)*8/seconds/1000),rttMs});}previous={at,frames,bytes};
+   if(r.type==='candidate-pair'&&(selected?r.id===selected:r.state==='succeeded'&&r.nominated)){const local=reports.get(r.localCandidateId),remote=reports.get(r.remoteCandidateId);if(local||remote)relay=local?.candidateType==='relay'||remote?.candidateType==='relay';}
+  });const at=performance.now();if(previous){const seconds=Math.max(.001,(at-previous.at)/1000);emit({type:'stats',fps:Math.max(0,(frames-previous.frames)/seconds),kbps:Math.max(0,(bytes-previous.bytes)*8/seconds/1000),rttMs,relay});}previous={at,frames,bytes};
  }catch{}},1000);
 })().catch(fail);
 })();</script></body></html>`;

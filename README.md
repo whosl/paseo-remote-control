@@ -127,9 +127,10 @@ python3 -m venv ~/.local/share/paseo-screen/rtc-venv
 ```
 
 Without it, viewing stays on Paseo-carried JPEGs. WebRTC signalling and all input
-stay on Paseo. Direct media is encrypted and attempts LAN/routable VPN connectivity;
-there is no configured STUN/TURN service, public screen URL or guaranteed Internet
-NAT traversal. Failed direct video automatically falls back to JPEG.
+stay on Paseo. Direct media is encrypted and attempts LAN/routable VPN connectivity.
+Outside-network viewing can use host-configured STUN and authenticated TURN;
+without that configuration there is no guaranteed Internet NAT traversal. Failed
+video automatically falls back to JPEG.
 
 The Android receiver loads a local, receive-only video document inside Paseo's
 existing WebView. Signalling and session heartbeats use authenticated plugin RPCs;
@@ -137,6 +138,39 @@ touch, keyboard, clipboard and ownership continue through the existing control
 coordinator. Playback stops on exit or backgrounding. The connection mode, frame
 rate and bandwidth appear under picture settings. Tap the connection mode to
 switch to Paseo-only transport or retry WebRTC. No camera or microphone is used.
+
+### STUN and TURN
+
+The host administrator can create `~/.config/paseo-remote-control/webrtc.json`
+(or set `PASEO_REMOTE_CONTROL_RTC_CONFIG` to another file). Keep it private with
+mode `0600`. For Coturn REST authentication, the file has this shape:
+
+```json
+{
+  "stunUrls": ["stun:turn.example.com:3478"],
+  "turnUrls": [
+    "turn:turn.example.com:3478?transport=udp",
+    "turn:turn.example.com:3478?transport=tcp",
+    "turns:turn.example.com:443?transport=tcp"
+  ],
+  "hostTurnUrl": "turns:turn.example.com:443?transport=tcp",
+  "sharedSecret": "REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_32_CHARACTERS",
+  "ttlSeconds": 3600
+}
+```
+
+Use the same private key as Coturn's `static-auth-secret` with `use-auth-secret`.
+The daemon issues individual expiring credentials through an authenticated RPC;
+the signing key is never returned to the viewer. Both Android and browser receivers
+use that configuration. Direct paths remain enabled. Picture settings identify
+**WebRTC direct**, **WebRTC relay**, or **Paseo / JPEG** using the selected ICE pair.
+
+`hostTurnUrl` selects one tested transport for aiortc, which uses a single TURN
+endpoint; browsers can gather candidates from all entries in `turnUrls`. TLS
+requires a publicly trusted certificate matching the configured hostname or IP.
+The TURN server needs its listener ports and its configured UDP relay port range
+allowed by both the system and cloud firewall. An HTTP-01 certificate renewal also
+needs port 80/TCP. Relay bandwidth and traffic are consumed only when relaying.
 
 ## Agent safety and privacy
 

@@ -82,7 +82,13 @@ export function useNativeVideo(enabled: boolean, display: number | undefined, ma
         setReported({ profile, state: next });
         if (next.active) setPlayback(old => old?.nonce === nonce ? { ...old, shown: true } : old);
       });
-    setPlayback({ profile, nonce, source: { html: nativeVideoDocument(nonce), baseUrl: "https://paseo-rtc.invalid/" }, command: { nonce }, shown: false, session });
+    void (async () => {
+      try {
+        const configuration = await rpc.current.config?.();
+        if (!current || session.stopped) return;
+        setPlayback({ profile, nonce, source: { html: nativeVideoDocument(nonce, configuration), baseUrl: "https://paseo-rtc.invalid/" }, command: { nonce }, shown: false, session });
+      } catch { session.stop("Direct video unavailable; using Paseo frames."); }
+    })();
     return () => { current = false; session.stop(); };
   }, [enabled, foreground, NativeView, display, maxWidth, fps, profile]);
 

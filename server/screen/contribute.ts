@@ -5,7 +5,8 @@ import type { NiriHelper } from "./niri";
 import type { ControlCoordinator } from "../control/coordinator";
 import type { WindowsDisplayManager } from "../host/windows-display";
 import { readPreferredDisplay, writePreferredDisplay } from "./preferences";
-import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, releaseInputRpc, requestPermissionsRpc, statusRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
+import { readVideoIceConfiguration } from "./video-config";
+import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, releaseInputRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
 
 type ScreenHelper = Pick<HelperProcess, "request" | "stop">;
 export default function contribute(server: PluginServerContext, control: ControlCoordinator, niri?: NiriHelper, helpers?: { capture: ScreenHelper; input: ScreenHelper }, displayManager?: Promise<WindowsDisplayManager | undefined>) {
@@ -62,6 +63,7 @@ export default function contribute(server: PluginServerContext, control: Control
   server.handle(statusRpc, () => readStatus("status"));
   server.handle(requestPermissionsRpc, () => readStatus("request"));
   server.handle(frameRpc, (request) => capture.request("frame", request));
+  server.handle(videoConfigRpc, () => readVideoIceConfiguration());
   server.handle(videoOfferRpc, (request) => capture.request("rtc-offer", request));
   server.handle(videoPingRpc, (request) => capture.request("rtc-ping", request));
   server.handle(videoStopRpc, (request) => capture.request("rtc-stop", request));

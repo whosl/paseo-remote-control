@@ -214,5 +214,7 @@
   "physicalVerificationFailed": "物理显示器验证失败",
   "nativeVideoUnavailable": "原生视频暂不可用，已回退到 Paseo 画面。",
   "androidWebrtcUnavailable": "当前 Android WebView 不支持 WebRTC。",
-  "androidH264Unavailable": "当前 Android WebView 不支持 H.264 解码。"
+  "androidH264Unavailable": "当前 Android WebView 不支持 H.264 解码。",
+  "webrtcDirect": "WebRTC 直连 / H.264",
+  "webrtcRelay": "WebRTC 中继 / H.264"
 }

@@ -1,6 +1,6 @@
 import type { DirectVideoSignalling } from "./web";
 
-export const initialNativeVideo = { active: false, connecting: false, fps: 0, kbps: 0, rttMs: null as number | null, reason: null as string | null, still: null as string | null };
+export const initialNativeVideo = { active: false, connecting: false, fps: 0, kbps: 0, relay: null as boolean | null, rttMs: null as number | null, reason: null as string | null, still: null as string | null };
 export type NativeVideoState = typeof initialNativeVideo;
 export type NativeVideoCommand = { nonce: string; answer?: string; stop?: boolean; ack?: number };
 
@@ -31,6 +31,7 @@ export class NativeVideoSession {
   private chunks: { id: number; total: number; parts: string[] } | null = null;
   private timeout: ReturnType<typeof setTimeout>;
   private heartbeat?: ReturnType<typeof setInterval>;
+  get stopped(): boolean { return this.closed; }
 
   constructor(
     private readonly nonce: string,
@@ -41,7 +42,7 @@ export class NativeVideoSession {
   ) {
     this.lastCommand = { nonce };
     update({ ...initialNativeVideo, connecting: true });
-    this.timeout = setTimeout(() => this.stop("Direct video did not arrive; using Paseo frames."), 15_000);
+    this.timeout = setTimeout(() => this.stop("Direct video did not arrive; using Paseo frames."), 25_000);
   }
 
   private send(command: Partial<NativeVideoCommand>): void {
@@ -81,7 +82,7 @@ export class NativeVideoSession {
     } else if (event.type === "stats" && this.ready) {
       const fps = Number(event.fps), kbps = Number(event.kbps);
       if (Number.isFinite(fps) && fps >= 0 && Number.isFinite(kbps) && kbps >= 0)
-        this.update({ ...initialNativeVideo, active: true, fps, kbps, rttMs: typeof event.rttMs === "number" && Number.isFinite(event.rttMs) ? event.rttMs : null });
+        this.update({ ...initialNativeVideo, active: true, fps, kbps, relay: typeof event.relay === "boolean" ? event.relay : null, rttMs: typeof event.rttMs === "number" && Number.isFinite(event.rttMs) ? event.rttMs : null });
     } else if (event.type === "error" && typeof event.message === "string") this.stop(event.message.slice(0, 500));
   }
 

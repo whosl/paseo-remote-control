@@ -214,5 +214,7 @@
   "physicalVerificationFailed": "Physical display verification failed",
   "nativeVideoUnavailable": "Native video is unavailable; using Paseo frames.",
   "androidWebrtcUnavailable": "WebRTC is unavailable in this Android WebView.",
-  "androidH264Unavailable": "H.264 decoding is unavailable in this Android WebView."
+  "androidH264Unavailable": "H.264 decoding is unavailable in this Android WebView.",
+  "webrtcDirect": "WebRTC direct / H.264",
+  "webrtcRelay": "WebRTC relay / H.264"
 }

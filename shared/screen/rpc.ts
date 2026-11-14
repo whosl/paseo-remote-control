@@ -206,6 +206,13 @@ export const displayFallbackRpc = defineRpc({
   output: displayFallbackSchema,
 });
 
+const videoIceConfigurationSchema = z.object({
+  iceServers: z.array(z.object({ urls: z.array(z.string().max(512)).max(8), username: z.string().max(256).optional(), credential: z.string().max(256).optional() })).max(8),
+  iceTransportPolicy: z.enum(["all", "relay"]).default("all"),
+});
+export type VideoIceConfiguration = z.infer<typeof videoIceConfigurationSchema>;
+export const videoConfigRpc = defineRpc({ name: "screen.video-config", input: z.object({}), output: videoIceConfigurationSchema });
+
 export const videoOfferRpc = defineRpc({
   name: "screen.video-offer",
   input: z.object({ display: z.number().optional(), maxWidth: z.number().int().min(320).max(2560), fps: z.number().int().min(1).max(30), sdp: z.string().min(1).max(65536) }),

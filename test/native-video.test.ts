@@ -60,7 +60,7 @@ describe("Android video session", () => {
   });
 
   it("times out a silent WebView and ignores later messages", async () => {
-    const h = setup(); await vi.advanceTimersByTimeAsync(15_000);
+    const h = setup(); await vi.advanceTimersByTimeAsync(25_000);
     expect(h.states.at(-1)?.reason).toContain("did not arrive");
     h.session.receive(event("offer", 1, { sdp: "late" }));
     expect(h.signalling.offer).not.toHaveBeenCalled();
@@ -126,6 +126,7 @@ describe("native WebView bridge", () => {
     const document = { title: "", querySelector: (tag: string) => tag === "video" ? video : canvas };
     const close = vi.fn();
     class Peer {
+      constructor(configuration: unknown) { expect(JSON.parse(JSON.stringify(configuration))).toEqual(ice); }
       iceGatheringState = "complete"; connectionState = "connected";
       localDescription = { type: "offer", sdp: "v=0\r\n" + "a=example\r\n".repeat(1000) };
       ontrack = (_event: unknown) => {}; onconnectionstatechange = () => {};
@@ -133,21 +134,27 @@ describe("native WebView bridge", () => {
       async createOffer() { return this.localDescription; }
       async setLocalDescription() {}
       async setRemoteDescription(value: { sdp: string }) { expect(value.sdp).toBe("answer"); video.onloadeddata(); }
-      async getStats() { return new Map(); }
+      async getStats() { return new Map<string, Record<string, unknown>>([
+        ["transport", { type: "transport", selectedCandidatePairId: "pair" }],
+        ["pair", { id: "pair", type: "candidate-pair", state: "succeeded", nominated: true, localCandidateId: "local", remoteCandidateId: "remote" }],
+        ["local", { candidateType: "relay" }], ["remote", { candidateType: "host" }],
+      ]); }
       close = close;
     }
     // Drive the same native session, then mirror its injected command property into the document.
     const session = new NativeVideoSession(nonce, { display: 1, maxWidth: 1280, fps: 24 }, h.signalling, value => { command = value; }, value => h.states.push(value));
-    const html = nativeVideoDocument(nonce);
+    const ice = { iceServers: [{ urls: ["turns:turn.example.com:443?transport=tcp"], username: "expiring-viewer", credential: "ephemeral-password" }], iceTransportPolicy: "all" as const };
+    const html = nativeVideoDocument(nonce, ice);
     runInNewContext(html.slice(html.indexOf("<script>") + 8, html.indexOf("</script>")), {
       document, history: { replaceState: () => session.receive("data:text/html;charset=utf-8;base64,", document.title) },
       window: { ReactNativeWebView: { injectedObjectJson: () => JSON.stringify(command) } },
       RTCPeerConnection: Peer, RTCRtpReceiver: { getCapabilities: () => ({ codecs: [{ mimeType: "video/H264" }] }) },
       MediaStream: class {}, addEventListener() {}, performance, setTimeout, clearTimeout, setInterval, clearInterval, Error,
     });
-    await vi.advanceTimersByTimeAsync(2500);
+    await vi.advanceTimersByTimeAsync(4500);
     expect(h.signalling.offer).toHaveBeenCalledTimes(1);
     expect(h.states.at(-1)?.active).toBe(true);
+    expect(h.states.at(-1)?.relay).toBe(true);
     session.stop(); await vi.advanceTimersByTimeAsync(50);
     expect(close).toHaveBeenCalledTimes(1); expect(canvas.style.display).toBe("block"); h.session.stop();
   });

@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { WEBRTC_HELPER } from "./webrtc-source.generated";
+import { readVideoIceConfiguration } from "./video-config";
 
 type Pending = { resolve(value: Record<string, unknown>): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> };
 export class WebRtcWorker {
@@ -28,8 +29,9 @@ export class WebRtcWorker {
   async offer(input: { sdp: string; output: string; width: number; fps: number }, env: NodeJS.ProcessEnv): Promise<Record<string, unknown>> {
     if (!(await this.available())) throw new Error("Direct video is unavailable on this host");
     await this.start(env);
+    const configuration = await readVideoIceConfiguration({ role: "host" });
     const session = randomUUID();
-    try { return await this.request("offer", { ...input, session, recorder: this.recorder }); }
+    try { return await this.request("offer", { ...input, ...configuration, session, recorder: this.recorder }); }
     catch (error) { void this.request("stop", { session }).catch(() => {}); throw error; }
   }
 
@@ -76,7 +78,7 @@ export class WebRtcWorker {
     if (!this.child || this.child.exitCode !== null) return Promise.reject(new Error("Direct screen worker is not running"));
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Direct screen request timed out")); }, 10_000);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error("Direct screen request timed out")); }, 15_000);
       this.pending.set(id, { resolve, reject, timer });
       this.child!.stdin!.write(JSON.stringify({ id, method, ...input }) + "\n", (error) => {
         if (error && this.pending.delete(id)) { clearTimeout(timer); reject(error); }

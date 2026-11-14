@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 
-from aiortc import MediaStreamTrack, RTCConfiguration, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
 from aiortc.contrib.media import MediaPlayer
 
 logging.basicConfig(stream=sys.stderr, level=logging.ERROR)
@@ -72,7 +72,7 @@ async def offer(message):
     session = message["session"]
     if len(sessions) >= 2:
         raise RuntimeError("Two direct screen viewers are already active; use the Paseo fallback")
-    pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+    pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**server) for server in message.get("iceServers", [])]))
     state = {"pc": pc, "at": time.monotonic()}
     sessions[session] = state
 
@@ -116,7 +116,7 @@ async def offer(message):
 async def dispatch(message):
     method = message["method"]
     if method == "offer":
-        return await asyncio.wait_for(offer(message), timeout=8)
+        return await asyncio.wait_for(offer(message), timeout=12)
     if method == "ping":
         state = sessions.get(message["session"])
         if state is None:
