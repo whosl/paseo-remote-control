@@ -135,7 +135,8 @@ video automatically falls back to JPEG.
 WebRTC Fast, Balanced and Sharp request up to 1280, 1920 and 2560 pixels wide,
 all at up to 30 FPS. The screen encoder starts conservatively at 1 Mbps and probes
 upward gradually, with ceilings of 4, 8 and 12 Mbps for 720p, 1080p and 1440p frames.
-Probing stops when receiver bandwidth estimates drop. Static desktops naturally use less bandwidth
+Probing stops when receiver bandwidth estimates drop or packet loss rises. RTP
+packet pacing and a loss-based cap protect slower relay paths. Static desktops naturally use less bandwidth
 and fewer newly captured frames; the numbers in picture settings report actual
 received video rather than the configured ceiling.
 

@@ -33,6 +33,8 @@ class ScreenH264Encoder(H264Encoder):
         self._probe_target = 0
         self._probe_after = time.monotonic() + 1
         self._probing = True
+        self._loss_ceiling = None
+        self._last_loss = 0
 
     @property
     def target_bitrate(self):
@@ -47,7 +49,17 @@ class ScreenH264Encoder(H264Encoder):
             self._probing = False
             self._probe_target = 0
         self._estimate = estimate
-        self._bitrate = min(max(estimate, self._probe_target), self._maximum)
+        self._bitrate = min(max(estimate, self._probe_target), self._maximum, self._loss_ceiling or self._maximum)
+
+    def packet_loss(self, fraction):
+        if fraction >= 0.05:
+            self._probing = False
+            self._probe_target = 0
+            self._last_loss = time.monotonic()
+            self._loss_ceiling = max(100_000, int(self._bitrate * 0.75))
+            self._bitrate = min(self._bitrate, self._loss_ceiling)
+        elif self._loss_ceiling is not None and time.monotonic() - self._last_loss >= 10:
+            self._loss_ceiling = min(self._maximum, int(self._loss_ceiling * 1.02))
 
     def _encode_frame(self, frame, force_keyframe):
         size = (frame.width, frame.height)
@@ -58,7 +70,7 @@ class ScreenH264Encoder(H264Encoder):
             self._desired = (2_000_000 if pixels <= 1280 * 720 else 4_000_000 if pixels <= 1920 * 1080 else 8_000_000)
             # Probe from a conservative startup rate. A high first-frame burst
             # can lose the keyframe on a limited TURN uplink before REMB arrives.
-            self._bitrate = min(self._estimate if self._estimate is not None else 1_000_000, self._maximum)
+            self._bitrate = min(self._estimate if self._estimate is not None else 1_000_000, self._maximum, self._loss_ceiling or self._maximum)
             self._probe_target = 0
             self._probe_after = time.monotonic() + 1
         # An app-limited receiver estimate can otherwise keep a healthy link at
@@ -93,6 +105,47 @@ class ScreenH264Encoder(H264Encoder):
 # RTCRtpSender imports get_encoder, whose globals resolve this class on demand.
 # No installed library files or other Paseo processes are modified.
 codecs.H264Encoder = ScreenH264Encoder
+
+
+class VideoPacer:
+    """Bounded RTP pacing; backpressure keeps LatestVideo from queuing old frames."""
+
+    def __init__(self, sender):
+        self.sender = sender
+        self.send = sender.transport._send_rtp
+        self.lock = asyncio.Lock()
+        self.deadline = 0
+
+    def encoder(self):
+        # The encoder factory and this adapter are tested against the pinned 1.16.
+        return getattr(self.sender, "_RTCRtpSender__encoder", None)
+
+    async def send_rtp(self, data):
+        if len(data) > 1 and 192 <= data[1] <= 223:
+            return await self.send(data)  # RTCP must not wait behind video.
+        async with self.lock:
+            loop = asyncio.get_running_loop()
+            delay = self.deadline - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            await self.send(data)
+            encoder = self.encoder()
+            rate = encoder.target_bitrate if isinstance(encoder, ScreenH264Encoder) else 1_000_000
+            self.deadline = max(self.deadline, loop.time() - 0.003) + (len(data) + 64) * 8 / (rate * 1.1)
+
+
+async def watch_loss(state):
+    pacer = state.get("pacer")
+    if pacer is None:
+        return
+    encoder = pacer.encoder()
+    if not isinstance(encoder, ScreenH264Encoder):
+        return
+    for report in (await state["sender"].getStats()).values():
+        if report.type == "remote-inbound-rtp" and report.timestamp != state.get("loss_report"):
+            state["loss_report"] = report.timestamp
+            # aiortc 1.16 exposes the RTCP wire fraction (0..255), not a float ratio.
+            encoder.packet_loss(report.fractionLost / 256)
 
 
 def capture_filter(width, fps):
@@ -187,6 +240,9 @@ async def offer(message):
         track = LatestVideo(player.video)
         state["track"] = track
         sender = pc.addTrack(track)
+        state["sender"] = sender
+        pacer = state["pacer"] = VideoPacer(sender)
+        sender.transport._send_rtp = pacer.send_rtp
         codecs = [codec for codec in RTCRtpSender.getCapabilities("video").codecs if codec.mimeType.lower() == "video/h264"]
         for transceiver in pc.getTransceivers():
             if transceiver.sender is sender:
@@ -225,8 +281,12 @@ async def handle(message):
 
 async def reap():
     while not closing:
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         for session, state in list(sessions.items()):
+            try:
+                await watch_loss(state)
+            except Exception:
+                pass  # A stats read must not disable idle-session cleanup.
             capture = state.get("capture")
             if time.monotonic() - state["at"] > 15 or (capture is not None and capture.poll() is not None):
                 await stop(session)
