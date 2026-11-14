@@ -50,7 +50,7 @@ function median(values: number[]): number {
  * Polls the host for JPEG frames while `active`. Unchanged frames come back without image data.
  * Frames are sized to the viewer (`viewWidth` in points), so small screens download far less.
  */
-export function useFrames(requested: boolean, displayId: number | undefined, quality: Quality, viewWidth: number, continuous = false, displayKey?: string): FrameState {
+export function useFrames(requested: boolean, displayId: number | undefined, quality: Quality, viewWidth: number, continuous = false, displayKey?: string, hostPlatform?: string): FrameState {
   // Stop capturing while the app is in the background (a hidden tab or a backgrounded phone app).
   const [appState, setAppState] = useState(AppState.currentState);
   useEffect(() => AppState.addEventListener("change", setAppState).remove, []);
@@ -76,6 +76,9 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
   // Rounded to 160 px steps so resizing the viewer does not restart the loop on every pixel.
   const wanted = viewWidth > 0 ? Math.ceil((viewWidth * Math.min(PixelRatio.get(), 2)) / 160) * 160 : quality.maxWidth;
   const maxWidth = Math.max(320, Math.min(quality.maxWidth, wanted));
+  // Windows captures on demand. Pace both request lanes together at the quality's target FPS,
+  // rather than limiting Balanced to ten requests/second regardless of capture performance.
+  const intervalMs = hostPlatform === "win32" && !continuous ? (1000 * PIPELINE) / captureFps(quality.quality) : quality.intervalMs;
 
   useEffect(() => {
     if (!active) return;
@@ -98,9 +101,10 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
     };
 
     const tick = async () => {
+      if (cancelled) return;
       const sequence = nextSequence++;
       const startedAt = Date.now();
-      let delay = quality.intervalMs;
+      let delay = intervalMs;
       try {
         const wakeHost = wakeNext.current;
         wakeNext.current = false;
@@ -135,7 +139,7 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
           setState(previous => ({ ...previous, ...rates }));
         }
         const streaming = continuous && result.captureMode === "native-stream";
-        delay = Math.max(0, (streaming ? 1000 / captureFps(quality.quality) : quality.intervalMs) - (now - startedAt));
+        delay = Math.max(0, (streaming ? 1000 / captureFps(quality.quality) : intervalMs) - (now - startedAt));
         // One long-poll avoids duplicate image responses on a LAN; high-RTT links need a second lane.
         if (!extraLane && (!streaming || (latencies.length >= 3 && median(latencies) >= 100))) { extraLane = true; schedule(50); }
       } catch (error) {
@@ -146,12 +150,12 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
       if (!cancelled) schedule(delay);
     };
 
-    for (let lane = 0; lane < (continuous ? 1 : PIPELINE); lane++) schedule((lane * quality.intervalMs) / PIPELINE);
+    for (let lane = 0; lane < (continuous ? 1 : PIPELINE); lane++) schedule((lane * intervalMs) / PIPELINE);
     return () => {
       cancelled = true;
       for (const timer of timers) clearTimeout(timer);
     };
-  }, [active, displayId, displayKey, quality, maxWidth, continuous]);
+  }, [active, displayId, displayKey, quality, maxWidth, continuous, intervalMs]);
 
   return { ...state, fps: active ? state.fps : 0, kbps: active ? state.kbps : 0, wake };
 }

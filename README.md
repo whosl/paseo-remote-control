@@ -142,6 +142,13 @@ the existing Framework C# compiler. No Python, VNC server or extra TCP listener 
 needed. The human viewer uses JPEGs carried by Paseo; Windows H.264/WebRTC and
 changed-frame long polling are not implemented.
 
+Windows JPEG viewing targets 30 FPS in Fast, 24 in Balanced and 15 in Sharp,
+subject to screen capture time, connection speed and client decoding. Fast and
+Balanced use faster bilinear resizing; Sharp retains the detailed resize filter.
+At most two frame requests are outstanding, and backgrounding the app stops
+polling. The FPS counter counts new pictures, so a static desktop can show zero
+while the connection remains healthy.
+
 The on-demand bridge also works when Paseo runs in Session 0 as a service. It
 creates temporary `Paseo-Remote-Control-*` tasks with an interactive **limited**
 user token, not Highest privileges. It does not restart or move the daemon.

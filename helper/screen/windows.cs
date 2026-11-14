@@ -775,8 +775,11 @@ namespace PaseoScreen
                 {
                     using (var graphics = Graphics.FromImage(scaled))
                     {
-                        graphics.InterpolationMode = InterpolationMode.HighQualityBilinear;
-                        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        // HighQualityBilinear dominates the on-demand capture time on Windows.
+                        // Fast/Balanced use bilinear filtering; Sharp retains the detailed filter.
+                        bool detailed = quality >= 0.75;
+                        graphics.InterpolationMode = detailed ? InterpolationMode.HighQualityBilinear : InterpolationMode.Bilinear;
+                        graphics.PixelOffsetMode = detailed ? PixelOffsetMode.HighQuality : PixelOffsetMode.None;
                         graphics.DrawImage(full, 0, 0, width, height);
                     }
                     return Encode(scaled, quality);

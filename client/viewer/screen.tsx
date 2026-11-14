@@ -95,7 +95,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const wanted = content.width > 0 ? Math.ceil(content.width * Math.min(PixelRatio.get(), 2) / 160) * 160 : quality.maxWidth;
   // Direct video does not carry frame display keys yet; managed hotplug uses identity-bearing JPEGs.
   const direct = useDirectVideo(videoNode, canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true, display?.id, Math.max(320, Math.min(quality.maxWidth, wanted)), [30, 24, 15][qualityIndex]!, { offer: offerVideo, ping: pingVideo, stop: stopVideo });
-  const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true, display?.stableKey);
+  const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true, display?.stableKey, lastGood.current?.platform);
   const frameAspect = frames.display ? frames.display.width / frames.display.height : null;
   useEffect(() => { if (frameAspect) setAspect(frameAspect); }, [frameAspect]);
   const frameMatchesDisplay = !!frames.uri && !!frames.display && frames.display.id === display?.id
