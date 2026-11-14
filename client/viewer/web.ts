@@ -92,7 +92,7 @@ export interface DirectVideoSignalling {
 }
 const initialVideo = { active: false, connecting: false, fps: 0, rttMs: null as number | null, kbps: 0, reason: null as string | null, still: null as string | null };
 
-/** Browser-only media; native clients keep the portable JPEG viewer and existing touch input. */
+/** Browser media; Android uses native-video and both retain the portable JPEG fallback. */
 export function useDirectVideo(node: unknown, enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling) {
   const [state, setState] = useState(initialVideo);
   const [foreground, setForeground] = useState(AppState.currentState !== "background");

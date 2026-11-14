@@ -60,10 +60,16 @@ the development tests. The installer runs the preparation commands in the manife
 | Other Linux desktops | Original X11/portal viewer | Not implemented | Combined path not tested |
 | Windows 10/11 | GDI JPEG, touch/trackpad | Focused-window visual tools | Combined live tests on a Windows service host |
 
-Mobile/browser UI is React Native-compatible. Native iOS/Android retain the JPEG
-path. Native phone rendering and vibration motors have not been tested end to
-end; feedback depends on the client and device. The browser viewer has been
-checked at desktop, phone, landscape and 320-pixel widths, with light/dark panels.
+Mobile/browser UI is React Native-compatible. Android can receive direct H.264
+video by reusing the WebView already compiled into Paseo, without an additional
+native dependency or APK update. The plugin detects that view at runtime and
+falls back to Paseo-carried JPEGs if it is absent, decoding is unsupported, or the
+direct connection fails. iOS retains the JPEG path. The production Android video
+component has received H.264 from a live Niri host inside a Paseo-based emulator
+test app; the user's installed APK and physical phone have not been tested end
+to end. Phone feedback depends on
+the client and device. The browser viewer has been checked at desktop, phone,
+landscape and 320-pixel widths, with light/dark panels.
 
 ## Install and migrate
 
@@ -124,6 +130,13 @@ Without it, viewing stays on Paseo-carried JPEGs. WebRTC signalling and all inpu
 stay on Paseo. Direct media is encrypted and attempts LAN/routable VPN connectivity;
 there is no configured STUN/TURN service, public screen URL or guaranteed Internet
 NAT traversal. Failed direct video automatically falls back to JPEG.
+
+The Android receiver loads a local, receive-only video document inside Paseo's
+existing WebView. Signalling and session heartbeats use authenticated plugin RPCs;
+touch, keyboard, clipboard and ownership continue through the existing control
+coordinator. Playback stops on exit or backgrounding. The connection mode, frame
+rate and bandwidth appear under picture settings. Tap the connection mode to
+switch to Paseo-only transport or retry WebRTC. No camera or microphone is used.
 
 ## Agent safety and privacy
 

@@ -17,6 +17,7 @@ import { QUALITIES, useFrames, useInputQueue } from "./use-screen";
 import { formatBandwidth } from "./frame-metrics";
 import { useViewerSession } from "./use-viewer-session";
 import { useDirectVideo, useFullscreen } from "./web";
+import { useNativeVideo } from "./native-video";
 import { useWebInput } from "./web-input";
 import { useOwnership } from "../ownership";
 import { localizeRemoteText, useRemoteTranslation, type RemoteTranslate } from "../messages";
@@ -94,7 +95,12 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const quality = QUALITIES[qualityIndex]!;
   const wanted = content.width > 0 ? Math.ceil(content.width * Math.min(PixelRatio.get(), 2) / 160) * 160 : quality.maxWidth;
   // Direct video does not carry frame display keys yet; managed hotplug uses identity-bearing JPEGs.
-  const direct = useDirectVideo(videoNode, canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true, display?.id, Math.max(320, Math.min(quality.maxWidth, wanted)), [30, 24, 15][qualityIndex]!, { offer: offerVideo, ping: pingVideo, stop: stopVideo });
+  const directEnabled = canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true;
+  const videoWidth = Math.max(320, Math.min(quality.maxWidth, wanted));
+  const videoFps = [30, 24, 15][qualityIndex]!;
+  const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { offer: offerVideo, ping: pingVideo, stop: stopVideo });
+  const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused);
+  const direct = isWeb ? browserDirect : nativeDirect;
   const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true, display?.stableKey, lastGood.current?.platform);
   const frameAspect = frames.display ? frames.display.width / frames.display.height : null;
   useEffect(() => { if (frameAspect) setAspect(frameAspect); }, [frameAspect]);
@@ -153,7 +159,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
       </View> : null}
       <View style={styles.viewport} onLayout={(event: LayoutChangeEvent) => setStage(event.nativeEvent.layout)}>
         <View style={styles.picture}>
-          {frames.uri ? <TouchStage uri={paused && direct.still ? direct.still : frames.uri} stage={stage} content={content} rotated={!isWeb && rotated} controlling={controlling} mode={inputMode} send={send} onZoomChange={setZoom} onPictureNode={setViewNode} onVideoNode={setVideoNode} />
+          {frames.uri ? <TouchStage uri={paused && direct.still ? direct.still : frames.uri} stage={stage} content={content} rotated={!isWeb && rotated} controlling={controlling} mode={inputMode} send={send} onZoomChange={setZoom} onPictureNode={setViewNode} onVideoNode={setVideoNode} nativeVideo={nativeDirect.video} />
           : <View style={styles.empty}>
               <Icon name="Monitor" size={32} color={chrome.muted} />
               <Text style={styles.emptyTitle}>{status.isLoading ? t("connectingComputer") : canCapture ? t("startingScreen") : t("screenWillAppear")}</Text>
@@ -235,6 +241,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
                   ? <Pressable accessibilityRole="button" accessibilityLabel={preferDirect ? t("paseoOnly") : t("tryWebrtc")} accessibilityHint={t("connectionModeLabel", { mode: connectionMode })} onPress={() => setPreferDirect(!preferDirect)}><Text style={[styles.connectionStat, { textDecorationLine: "underline" }]}>{connectionMode}</Text></Pressable>
                   : <Text accessibilityLabel={t("connectionModeLabel", { mode: connectionMode })} style={styles.connectionStat}>{connectionMode}</Text>}
               </View>
+              {preferDirect && direct.reason ? <Text style={styles.description}>{localizeRemoteText(direct.reason, t)}</Text> : null}
               <View style={styles.rule} />
               <Text style={styles.sectionLabel}>{t("inputSection")}</Text>
               <View style={styles.qualityRow}>{(["touchscreen", "trackpad"] as InputMode[]).map((mode) => <Pressable key={mode} accessibilityRole="button" accessibilityLabel={t("selectInputMode", { mode: mode === "trackpad" ? t("trackpad") : t("touchscreen") })} accessibilityState={{ selected: inputMode === mode }} onPress={() => setInputMode(mode)} style={[styles.quality, inputMode === mode && styles.selectedRow]}><Icon name={mode === "trackpad" ? "Touchpad" : "Hand"} size={18} color={theme.colors.foreground} /><Text style={styles.rowTitle}>{mode === "trackpad" ? t("trackpad") : t("touchscreen")}</Text></Pressable>)}</View>

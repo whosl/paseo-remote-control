@@ -30,7 +30,9 @@ Display changes reserve human control. Unknown monitor states do not trigger
 automatic changes, and disabling automation keeps the only working screen alive.
 
 Viewing uses the existing Paseo connection with optional encrypted direct H.264
-video in supported browsers. Direct connections have no configured TURN service;
+video in supported browsers and Android clients that include Paseo's WebView.
+Android reuses that installed component; unavailable or failed video falls back
+to JPEG. iOS uses JPEG. Direct connections have no configured STUN/TURN service;
 unreachable video falls back to JPEG. Agent screenshots and tool results reach the
 configured model provider. Clipboard paste can replace host text. This controls
 real apps and is a trusted-code coordination mechanism, not an operating-system

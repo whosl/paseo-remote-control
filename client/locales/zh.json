@@ -211,5 +211,8 @@
   "driverNeedsAdmin": "需要管理员先安装并配置已签名的虚拟显示驱动。",
   "displayUnlockBeforeSwitch": "请先解锁并恢复主机控制，再切换显示器。",
   "virtualKept": "物理显示器已断开或控制已暂停，当前保留虚拟备用屏。",
-  "physicalVerificationFailed": "物理显示器验证失败"
+  "physicalVerificationFailed": "物理显示器验证失败",
+  "nativeVideoUnavailable": "原生视频暂不可用，已回退到 Paseo 画面。",
+  "androidWebrtcUnavailable": "当前 Android WebView 不支持 WebRTC。",
+  "androidH264Unavailable": "当前 Android WebView 不支持 H.264 解码。"
 }

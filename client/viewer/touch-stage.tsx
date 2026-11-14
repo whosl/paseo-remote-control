@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import { PanResponder, Platform, View, type GestureResponderEvent } from "react-native";
 import type { ScreenInputEvent } from "../../shared/screen/rpc";
@@ -12,12 +12,13 @@ import { useRemoteTranslation } from "../messages";
 const isWeb = Platform.OS === "web";
 const touchesOf = (event: GestureResponderEvent) => event.nativeEvent.touches.map((touch) => ({ x: touch.locationX, y: touch.locationY }));
 
-export function TouchStage({ uri, stage, content, rotated, controlling, mode, send, onZoomChange, onPictureNode, onVideoNode }: {
+export function TouchStage({ uri, stage, content, rotated, controlling, mode, send, onZoomChange, onPictureNode, onVideoNode, nativeVideo }: {
   uri: string; stage: Size; content: Size; rotated: boolean; controlling: boolean; mode: InputMode;
   send(event: ScreenInputEvent): void;
   onZoomChange(zoom: number): void;
   onPictureNode?(node: unknown): void;
   onVideoNode?(node: unknown): void;
+  nativeVideo?: ReactNode;
 }) {
   const { t } = useRemoteTranslation();
   const [view, setView] = useState<View2D>({ content, rotated, zoom: 1, panX: 0, panY: 0 });
@@ -57,6 +58,7 @@ export function TouchStage({ uri, stage, content, rotated, controlling, mode, se
       }}>
         <FrameImage uri={uri} width={view.content.width} height={view.content.height} />
         {isWeb ? <View ref={onVideoNode} pointerEvents="none" style={{ position: "absolute", inset: 0 }} /> : null}
+        {!isWeb ? nativeVideo : null}
       </View>
       {!isWeb ? <View collapsable={false} accessibilityLabel={t("remoteScreen")} style={{ position: "absolute", inset: 0 }} {...responder.panHandlers} /> : null}
       {mode === "trackpad" && controlling ? <View pointerEvents="none" accessibilityLabel={t("trackpadCursor")} style={{ position: "absolute", left: cursorX - 3, top: cursorY - 3, width: 24, height: 24, borderRadius: 12, backgroundColor: "rgba(14,22,29,0.65)", alignItems: "center", justifyContent: "center" }}><Icon name="MousePointer2" size={19} color="#d9efff" /></View> : null}
