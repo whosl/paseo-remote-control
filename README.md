@@ -12,15 +12,18 @@ paseo-computer-use, with a shared input backend and human-priority control autho
 - Enable agent tools under **Settings > Remote Control / Agents**. Supported agent
   providers are Claude, Codex and Oh My Pi. New agents receive the `paseo-computer`
   MCP server; existing sessions may need a new agent or an MCP reconnect.
-- During an agent action, the viewer shows its identity, target app and tool. On
+- During agent control, a compact viewer strip shows the agent identity and
+  **Take over** without covering the picture, even with the toolbar hidden. On
   Linux/Niri and Windows, a local notice also offers **Take over** and **Pause all**,
   without taking keyboard focus.
 - Watching does not claim control. While an agent owns control, viewer input is
   refused at the server, not just disabled visually. Choose **Take over** first.
 - Taking over cancels active agent tools, invalidates queued actions, waits for
   actual input cleanup and releases held buttons/keys. Human priority remains
-  latched, including after plugin reload. **Allow agents** explicitly grants
-  access again; an interrupted agent needs a new turn before retrying.
+  latched, including after plugin reload. A small toolbar shield indicates human
+  priority without a persistent overlay. **Screen settings > Control ownership >
+  Allow agents** explicitly grants access again; an interrupted agent needs a new
+  turn before retrying. Opening settings or hiding controls never grants access.
 - Your first ordinary viewer input also reserves human control. Multiple paired
   human viewers share this human-priority state; they are not separate exclusive
   per-device leases.

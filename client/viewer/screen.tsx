@@ -130,6 +130,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const fps = paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1);
   const bandwidth = paused ? "—" : formatBandwidth(direct.active ? direct.kbps : frames.kbps);
   const connectionMode = direct.active ? "WebRTC / H.264" : "Paseo / JPEG";
+  const agentActive = ownership.state?.mode === "agent";
 
   return (
     <View ref={setRootNode} style={styles.screen}>
@@ -141,6 +142,13 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
         </View>
         <Action styles={styles} label={fallbackChange.isPending ? t("switching") : t("switchBack")} disabled={fallbackChange.isPending || fallback.returnDisplay === null} onPress={() => fallbackChange.mutate("return-physical")} />
       </View> : null}
+      {agentActive ? <View accessibilityLabel={t("ownershipNotice")} style={styles.agentNotice}>
+        <Icon name="Bot" size={16} color={theme.colors.accent} />
+        <Text accessibilityLiveRegion="polite" numberOfLines={1} style={styles.agentNoticeText}>{t("agentControlling", { agent: localizeRemoteText(ownership.state?.label, t) })}</Text>
+        <Pressable accessibilityRole="button" accessibilityLabel={t("takeOverAgent")} disabled={ownership.changing || ownership.state?.paused} onPress={ownership.takeOver} style={[styles.agentTakeover, (ownership.changing || ownership.state?.paused) && { opacity: 0.45 }]}>
+          <Text style={styles.agentTakeoverText}>{ownership.changing ? t("switching") : t("takeOver")}</Text>
+        </Pressable>
+      </View> : null}
       <View style={styles.viewport} onLayout={(event: LayoutChangeEvent) => setStage(event.nativeEvent.layout)}>
         <View style={styles.picture}>
           {frames.uri ? <TouchStage uri={paused && direct.still ? direct.still : frames.uri} stage={stage} content={content} rotated={!isWeb && rotated} controlling={controlling} mode={inputMode} send={send} onZoomChange={setZoom} onPictureNode={setViewNode} onVideoNode={setVideoNode} />
@@ -150,14 +158,6 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
               <Text style={styles.hint}>{t("privateView", { host: host.label })}</Text>
             </View>}
         </View>
-
-        {ownership.state?.mode === "agent" || ownership.state?.humanPriority ? <View style={{ position: "absolute", top: minimal ? 16 : short ? 62 : 82, left: 12, right: 12, alignItems: "center", zIndex: 20 }} pointerEvents="box-none">
-          <View accessibilityLabel={t("ownershipNotice")} style={{ maxWidth: 620, width: "100%", flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "rgba(20,34,44,0.97)", borderColor: ownership.state.mode === "agent" ? chrome.blue : chrome.green, borderWidth: 1, borderRadius: 13, padding: 12 }}>
-            <Icon name={ownership.state.mode === "agent" ? "Bot" : "UserRound"} size={20} color={chrome.blue} />
-            <View style={{ flex: 1, minWidth: 0, gap: 3 }}><Text style={{ color: chrome.text, fontSize: 13, fontWeight: "600" }}>{ownership.state.mode === "agent" ? t("agentControlling", { agent: localizeRemoteText(ownership.state.label, t) }) : ownership.state.paused ? t("allRemoteInputPaused") : t("youHaveControl")}</Text><Text numberOfLines={2} style={{ color: chrome.muted, fontSize: 11 }}>{ownership.state.mode === "agent" ? [ownership.state.app, ownership.state.tool, t("watchingLive")].filter(Boolean).join(" · ") : t("agentsBlocked")}</Text></View>
-            <Pressable accessibilityRole="button" accessibilityLabel={ownership.state.mode === "agent" ? t("takeOverAgent") : t("allowAgentControl")} disabled={ownership.changing || ownership.state.paused} onPress={ownership.state.mode === "agent" ? ownership.takeOver : ownership.allowAgents} style={{ paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: chrome.blue, opacity: ownership.changing || ownership.state.paused ? 0.45 : 1 }}><Text style={{ color: "#11232e", fontSize: 12, fontWeight: "600" }}>{ownership.changing ? t("switching") : ownership.state.mode === "agent" ? t("takeOver") : t("allowAgents")}</Text></Pressable>
-          </View>
-        </View> : null}
 
         {!minimal ? <>
           <View pointerEvents="box-none" style={[styles.top, { top: short ? 10 : 20, left: compact ? 12 : 24, right: compact ? 12 : 24, gap: tiny ? 4 : 8 }]}>
@@ -183,8 +183,11 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
             <View style={styles.dock}>
               <Control small icon={paused ? "Play" : "Pause"} label={paused ? t("resumePicture") : t("pausePicture")} active={paused} onPress={() => setPaused(!paused)} />
               <View style={styles.divider} />
-              <Pressable accessibilityRole="button" accessibilityLabel={control ? t("switchViewOnly") : t("enableRemoteControl")} accessibilityState={{ selected: control }} onPress={() => setControl(!control)} style={styles.controlMode}>
-                <Icon name={controlling ? "MousePointer2" : "Eye"} size={17} color={controlling ? chrome.green : chrome.muted} />
+              <Pressable accessibilityRole="button" accessibilityLabel={control ? t("switchViewOnly") : t("enableRemoteControl")} accessibilityHint={ownership.state?.humanPriority ? t("humanPriority") : undefined} accessibilityState={{ selected: control }} onPress={() => setControl(!control)} style={styles.controlMode}>
+                <View style={styles.inputIcon}>
+                  <Icon name={controlling ? "MousePointer2" : "Eye"} size={17} color={controlling ? chrome.green : chrome.muted} />
+                  {ownership.known && ownership.state?.humanPriority ? <View pointerEvents="none" style={styles.priorityBadge}><Icon name="ShieldCheck" size={10} color={chrome.green} /></View> : null}
+                </View>
                 {!compact ? <Text style={[styles.modeLabel, { color: controlling ? chrome.green : chrome.text }]}>{controlling ? t("control") : t("viewOnly")}</Text> : null}
               </Pressable>
               <View style={styles.divider} />
@@ -237,9 +240,14 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
               <Action styles={styles} label={feedbackEnabled ? t("hapticsOn") : t("hapticsOff")} onPress={() => setFeedbackEnabled(!feedbackEnabled)} />
               <Text style={styles.description}>{t("hapticsHint")}</Text>
               <View style={styles.rule} />
-              <Text style={styles.sectionLabel}>{t("ownershipNotice")}</Text>
+              <Text style={styles.sectionLabel}>{t("ownershipSection")}</Text>
               <Text style={styles.description}>{t("ownerHint", { owner: localizeRemoteText(ownership.state?.label, t) ?? t("connectingEllipsis") })}</Text>
               <Action styles={styles} label={ownership.changing ? t("switchingControl") : t("takeControlStopAgents")} disabled={ownership.changing} onPress={ownership.takeOver} />
+              {ownership.state?.humanPriority && !agentActive ? <>
+                <Text style={styles.description}>{t("agentsBlocked")}</Text>
+                <Action styles={styles} label={ownership.changing ? t("switchingControl") : t("allowAgents")} disabled={ownership.changing || !ownership.known || ownership.state.paused} onPress={ownership.allowAgents} />
+                {ownership.state.paused ? <Text style={styles.description}>{t("allowAgentsResume")}</Text> : null}
+              </> : ownership.known && !agentActive ? <Text style={styles.description}>{t("agentsAllowedHint")}</Text> : null}
               <View style={styles.rule} />
               {hostPlatform === "win32" ? <>
                 <Text style={styles.sectionLabel}>{t("windowsHeadless")}</Text>
@@ -340,6 +348,10 @@ function createStyles({ colors: c }: PluginTheme) {
   return StyleSheet.create({
     screen: { flex: 1, minHeight: 0, width: "100%", backgroundColor: c.surface0, overflow: "hidden" },
     fallbackBanner: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, backgroundColor: c.surface1, borderBottomWidth: 1, borderColor: c.border },
+    agentNotice: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 6, backgroundColor: c.surface1, borderBottomWidth: 1, borderColor: c.border },
+    agentNoticeText: { flex: 1, minWidth: 0, color: c.foreground, fontSize: 12, fontWeight: "500" },
+    agentTakeover: { minHeight: 32, justifyContent: "center", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, backgroundColor: c.accent },
+    agentTakeoverText: { color: c.accentForeground, fontSize: 12, fontWeight: "600" },
     viewport: { flex: 1, minHeight: 0, position: "relative", backgroundColor: "#050608" },
     picture: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
     empty: { alignItems: "center", gap: 12, padding: 24 },
@@ -357,6 +369,8 @@ function createStyles({ colors: c }: PluginTheme) {
     dock: { flexDirection: "row", alignItems: "center", gap: 5, padding: 7, borderWidth: 1, borderColor: chrome.border, borderRadius: 30, backgroundColor: chrome.surface },
     divider: { width: 1, height: 19, backgroundColor: chrome.border, marginHorizontal: 3 },
     controlMode: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 7, height: 36 },
+    inputIcon: { width: 19, height: 20, alignItems: "center", justifyContent: "center" },
+    priorityBadge: { position: "absolute", top: -4, right: -5, padding: 1, borderRadius: 6, backgroundColor: chrome.surface },
     modeLabel: { fontSize: 12, fontWeight: "500" },
     hint: { color: chrome.muted, fontSize: 11, textAlign: "center" },
     reveal: { position: "absolute", right: 16, bottom: 16, zIndex: 10 },
