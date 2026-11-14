@@ -152,6 +152,30 @@ keyboard focus. Agent input waits for its visible acknowledgement. The lock scre
 sign-in/UAC secure desktop and higher-integrity applications are not bypassed.
 Windows, like Niri, has no global Escape/shake or physical-input auto-takeover hook.
 
+#### Physical-first headless fallback
+
+Windows can expose a low-resolution synthetic desktop when its physical monitor
+disconnects. Remote Control can use a separately provisioned, signed VirtualDrivers
+virtual display as a 1920 x 1080 fallback. It is an additional monitor in the same
+login session, not a separate session or a guarantee of independent human/agent input.
+
+- Physical displays have priority. With a physical monitor available, fallback does
+  not activate another screen. Unknown or failed topology queries never mean headless.
+- Verified absence is debounced before enabling only the provisioned virtual device.
+  Switching reserves human control and releases agent input. Agents require explicit
+  permission again afterwards.
+- When a physical display returns, the viewer offers **Switch back** and keeps the
+  current virtual picture until you confirm. The physical display must already be
+  active in Windows. Window movement and capture are verified before disabling the
+  virtual adapter; a window that cannot be moved keeps that screen enabled.
+- Turning automation off or reloading the plugin does not remove the only working
+  screen. Driver installation/removal is a separate administrator operation, never a
+  background download or an action available to an agent through its MCP tools.
+
+The viewer settings expose **Windows headless > Automatic fallback** after an
+administrator provisions the driver. See [Windows display setup](docs/WINDOWS-DISPLAY.md)
+for the pinned driver, installation transaction, rollback and GPU-update cautions.
+
 Niri has no global physical Escape/shake interception or automatic same-window
 human-activity detector. Use the host notice, viewer takeover/pause controls, or
 Paseo Stop. macOS retains its native helper's existing stop and overlay behavior.

@@ -26,8 +26,16 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm run lint
-      - run: npx vitest run test/windows.test.ts test/windows-ipc.test.ts test/control-coordinator.test.ts
+      - run: npx vitest run test/windows.test.ts test/windows-ipc.test.ts test/windows-display.test.ts test/control-coordinator.test.ts test/preferences-migration.test.ts test/viewer-input-queue.test.ts
       - run: npm run test:viewer
+      - name: Parse provisioning scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          foreach ($file in @('scripts/windows-provision-display.ps1', 'scripts/windows-rollback-display.ps1')) {
+            $tokens = $null; $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $file), [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          }
       - name: Compile native Windows helper
         shell: pwsh
         run: |

@@ -39,6 +39,12 @@ namespace PaseoScreen
         public Rectangle Bounds;
         public bool Primary;
         public string Name;
+        public Rectangle WorkArea;
+        public string DeviceName;
+        public string Kind = "unknown";
+        public string StableKey;
+        public bool ManagedVirtual;
+        public int TargetCount;
 
         public Dictionary<string, object> Json()
         {
@@ -54,6 +60,10 @@ namespace PaseoScreen
             json["main"] = Primary;
             json["builtin"] = false;
             json["name"] = Name;
+            json["kind"] = Kind;
+            json["stableKey"] = StableKey;
+            json["deviceName"] = DeviceName;
+            json["managedVirtual"] = ManagedVirtual;
             return json;
         }
     }
@@ -140,6 +150,8 @@ namespace PaseoScreen
                     case "input":
                         result = Input.Handle(request);
                         break;
+                    case "display-configure-virtual": result = Displays.ConfigureVirtual(request); break;
+                    case "display-migrate-windows": result = WindowsScene.Migrate(request); break;
                     case "scene": result = WindowsScene.Read(); break;
                     case "focus": result = WindowsScene.Focus(request); break;
                     case "notice": result = ControlNotice.Update(request); break;
@@ -167,7 +179,8 @@ namespace PaseoScreen
 
         static Dictionary<string, object> Status()
         {
-            var displays = Displays.List();
+            WindowsTopology topology;
+            var displays = Displays.List(out topology);
             var status = new Dictionary<string, object>();
             // Windows has no screen-capture or input permission for desktop apps.
             status["screenRecording"] = Process.GetCurrentProcess().SessionId != 0;
@@ -178,6 +191,7 @@ namespace PaseoScreen
             status["sessionId"] = Process.GetCurrentProcess().SessionId;
             status["accessibility"] = true;
             status["locked"] = Native.SecureDesktopShowing();
+            status["windowsTopology"] = topology.Json();
             var list = new List<object>();
             foreach (var display in displays) list.Add(display.Json());
             status["displays"] = list;
@@ -216,9 +230,317 @@ namespace PaseoScreen
 
     // MARK: Displays
 
+    class WindowsDisplayTarget
+    {
+        public string StableKey;
+        public string Kind;
+        public bool ManagedVirtual;
+        public bool Active;
+        public string DeviceName;
+        public string TargetName;
+        public string MonitorDevicePath;
+        public string AdapterDevicePath;
+        public uint OutputTechnology;
+        public uint NameFlags;
+        public uint StatusFlags;
+        public string[] HardwareIds = new string[0];
+        public Rectangle SourceBounds;
+
+        public Dictionary<string, object> Json()
+        {
+            return new Dictionary<string, object> {
+                { "stableKey", StableKey }, { "kind", Kind }, { "managedVirtual", ManagedVirtual },
+                { "active", Active }, { "deviceName", DeviceName }, { "targetName", TargetName },
+                { "monitorDevicePath", MonitorDevicePath }, { "adapterDevicePath", AdapterDevicePath },
+                { "outputTechnology", OutputTechnology }, { "hardwareIds", HardwareIds },
+                { "nameFlags", NameFlags }, { "statusFlags", StatusFlags }
+            };
+        }
+    }
+
+    class WindowsTopology
+    {
+        public bool Reliable = true;
+        public int PhysicalConnected;
+        public int PhysicalActive;
+        public int UnknownConnected;
+        public string Error;
+        public readonly List<WindowsDisplayTarget> Targets = new List<WindowsDisplayTarget>();
+
+        public void Fail(string error)
+        {
+            Reliable = false;
+            if (Error == null) Error = error;
+        }
+
+        public Dictionary<string, object> Json()
+        {
+            var json = new Dictionary<string, object> {
+                { "reliable", Reliable }, { "physicalConnected", PhysicalConnected }, { "physicalActive", PhysicalActive }
+            };
+            if (Error != null) json["error"] = Error;
+            // Native-only diagnostics: do not require these device paths in the viewer's public schema.
+            var paths = new List<object>();
+            foreach (var target in Targets) paths.Add(target.Json());
+            json["paths"] = paths;
+            return json;
+        }
+
+        static string AdapterKey(Native.LUID adapter)
+        {
+            return adapter.HighPart.ToString("x8") + adapter.LowPart.ToString("x8");
+        }
+
+        static string PathKey(Native.LUID adapter, uint id)
+        {
+            return AdapterKey(adapter) + ":" + id;
+        }
+
+        static string Classify(uint technology, bool managed, uint statusFlags)
+        {
+            if (managed || technology == 17) return "virtual"; // INDIRECT_VIRTUAL, not INDIRECT_WIRED (16).
+            // Forced projection is not evidence of an attached monitor. Miracast/other/indirect wired
+            // may be real displays; leave them unknown and prevent headless automation.
+            if ((statusFlags & 0x1c) != 0) return "unknown";
+            switch (technology)
+            {
+                case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 8: case 9:
+                case 10: case 11: case 12: case 13: case 14: case 18: case 0x80000000:
+                    return "physical";
+                default: return "unknown";
+            }
+        }
+
+        static Native.DISPLAYCONFIG_DEVICE_INFO_HEADER Header(uint type, Type structure, Native.LUID adapter, uint id)
+        {
+            return new Native.DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                type = type, size = (uint)Marshal.SizeOf(structure), adapterId = adapter, id = id
+            };
+        }
+
+        public static WindowsTopology Read(bool allPaths)
+        {
+            var topology = new WindowsTopology();
+            try { topology.ReadPaths(allPaths); }
+            catch (Exception error) { topology.Fail("Windows display query failed: " + error.Message); }
+            return topology;
+        }
+
+        void ReadPaths(bool allPaths)
+        {
+            // QDC_ALL_PATHS includes connected but inactive physical monitors. Never use the CCD
+            // persistence database, EDID cache, screen dimensions or GDI monitor count for presence.
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-querydisplayconfig
+            uint flags = allPaths ? 1U : 2U;
+            Native.DISPLAYCONFIG_PATH_INFO[] paths = null;
+            Native.DISPLAYCONFIG_MODE_INFO[] modes = null;
+            uint pathCount = 0, modeCount = 0;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                int result = Native.GetDisplayConfigBufferSizes(flags, out pathCount, out modeCount);
+                if (result != 0) { Fail("GetDisplayConfigBufferSizes failed (" + result + ")"); return; }
+                if (pathCount > 16384 || modeCount > 65536) { Fail("Display topology exceeds query limits"); return; }
+                paths = new Native.DISPLAYCONFIG_PATH_INFO[Math.Max(1, (int)pathCount)];
+                modes = new Native.DISPLAYCONFIG_MODE_INFO[Math.Max(1, (int)modeCount)];
+                result = Native.QueryDisplayConfig(flags, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero);
+                if (result == 122) continue; // ERROR_INSUFFICIENT_BUFFER: hotplug between sizing and query.
+                if (result != 0) { Fail("QueryDisplayConfig failed (" + result + ")"); return; }
+                if (pathCount > paths.Length || modeCount > modes.Length) { Fail("Invalid display query size"); return; }
+                ReadTargets(paths, pathCount, modes, modeCount);
+                return;
+            }
+            Fail("Display topology kept changing during QueryDisplayConfig");
+        }
+
+        void ReadTargets(Native.DISPLAYCONFIG_PATH_INFO[] paths, uint pathCount, Native.DISPLAYCONFIG_MODE_INFO[] modes, uint modeCount)
+        {
+            var targets = new Dictionary<string, WindowsDisplayTarget>(StringComparer.Ordinal);
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal);
+            var adapters = new Dictionary<string, string>(StringComparer.Ordinal);
+            var hardware = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            for (int i = 0; i < pathCount; i++)
+            {
+                var path = paths[i];
+                bool active = (path.flags & 1) != 0;
+                // During removal an active path can still have targetAvailable == FALSE (MSDN).
+                if (path.targetInfo.targetAvailable == 0)
+                {
+                    if (active) Fail("An active display target is being disconnected");
+                    continue;
+                }
+                string targetId = PathKey(path.targetInfo.adapterId, path.targetInfo.id);
+                WindowsDisplayTarget target;
+                if (!targets.TryGetValue(targetId, out target))
+                {
+                    var name = new Native.DISPLAYCONFIG_TARGET_DEVICE_NAME();
+                    name.header = Header(2, typeof(Native.DISPLAYCONFIG_TARGET_DEVICE_NAME), path.targetInfo.adapterId, path.targetInfo.id);
+                    int result = Native.DisplayConfigGetDeviceInfo(ref name);
+                    if (result != 0) Fail("DisplayConfigGetDeviceInfo(target) failed (" + result + ")");
+                    string adapterId = AdapterKey(path.targetInfo.adapterId);
+                    string adapterPath;
+                    if (!adapters.TryGetValue(adapterId, out adapterPath))
+                    {
+                        var adapter = new Native.DISPLAYCONFIG_ADAPTER_NAME();
+                        adapter.header = Header(4, typeof(Native.DISPLAYCONFIG_ADAPTER_NAME), path.targetInfo.adapterId, 0);
+                        int adapterResult = Native.DisplayConfigGetDeviceInfo(ref adapter);
+                        adapterPath = adapterResult == 0 ? adapter.adapterDevicePath : null;
+                        if (adapterResult != 0) Fail("DisplayConfigGetDeviceInfo(adapter) failed (" + adapterResult + ")");
+                        adapters[adapterId] = adapterPath;
+                        hardware[adapterId] = Native.AdapterHardwareIds(adapterPath);
+                    }
+                    bool managed = false;
+                    foreach (string hwid in hardware[adapterId])
+                        if (string.Equals(hwid, @"Root\MttVDD", StringComparison.OrdinalIgnoreCase) || string.Equals(hwid, "MttVDD", StringComparison.OrdinalIgnoreCase)) managed = true;
+                    target = new WindowsDisplayTarget {
+                        TargetName = name.monitorFriendlyDeviceName ?? "", MonitorDevicePath = name.monitorDevicePath ?? "",
+                        AdapterDevicePath = adapterPath ?? "", OutputTechnology = result == 0 ? name.outputTechnology : path.targetInfo.outputTechnology,
+                        NameFlags = name.flags, StatusFlags = path.targetInfo.statusFlags,
+                        HardwareIds = hardware[adapterId], ManagedVirtual = managed && result == 0
+                    };
+                    target.Kind = result == 0 ? Classify(target.OutputTechnology, target.ManagedVirtual, path.targetInfo.statusFlags) : "unknown";
+                    // Inactive QDC paths have default target details/status flags. The device-name
+                    // flag still explicitly rules out treating this forced target as physical.
+                    if (target.Kind == "physical" && (target.NameFlags & 2) != 0) target.Kind = "unknown";
+                    // Monitor interface paths survive GDI DISPLAYn renumbering. LUID/target is only a
+                    // conservative session identity if the driver supplies neither interface path.
+                    string identity = !string.IsNullOrEmpty(target.MonitorDevicePath) ? target.MonitorDevicePath :
+                        !string.IsNullOrEmpty(adapterPath) ? adapterPath + ":" + path.targetInfo.id : targetId;
+                    target.StableKey = "windows-target:" + identity.ToLowerInvariant();
+                    targets[targetId] = target;
+                    Targets.Add(target);
+                }
+                if (!active) continue;
+                string sourceId = PathKey(path.sourceInfo.adapterId, path.sourceInfo.id);
+                string deviceName;
+                if (!sources.TryGetValue(sourceId, out deviceName))
+                {
+                    var source = new Native.DISPLAYCONFIG_SOURCE_DEVICE_NAME();
+                    source.header = Header(1, typeof(Native.DISPLAYCONFIG_SOURCE_DEVICE_NAME), path.sourceInfo.adapterId, path.sourceInfo.id);
+                    int result = Native.DisplayConfigGetDeviceInfo(ref source);
+                    deviceName = result == 0 ? source.viewGdiDeviceName : null;
+                    if (string.IsNullOrEmpty(deviceName)) Fail("DisplayConfigGetDeviceInfo(source) failed (" + result + ")");
+                    sources[sourceId] = deviceName;
+                }
+                if (target.Active && !string.Equals(target.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
+                    Fail("A display target has multiple active sources");
+                target.Active = true;
+                target.DeviceName = deviceName;
+                uint modeIndex = path.sourceInfo.modeInfoIdx;
+                if (modeIndex >= modeCount || modes[modeIndex].infoType != 1 || modes[modeIndex].id != path.sourceInfo.id ||
+                    AdapterKey(modes[modeIndex].adapterId) != AdapterKey(path.sourceInfo.adapterId))
+                {
+                    Fail("An active display has no valid source mode");
+                    continue;
+                }
+                var mode = modes[modeIndex];
+                if (mode.width == 0 || mode.height == 0 || mode.width > int.MaxValue || mode.height > int.MaxValue)
+                    Fail("An active display has invalid source bounds");
+                else target.SourceBounds = new Rectangle(mode.position.x, mode.position.y, (int)mode.width, (int)mode.height);
+            }
+            // A forced NVIDIA source is not a monitor. friendlyNameForced (bit 2) explicitly says
+            // there is no detectable monitor attached; blank names on their own do NOT prove this.
+            // Corroborate with current PnP devnodes, excluding only monitors mapped to other known
+            // CCD targets (including the managed VDD), never cached EDID/registry monitor entries.
+            // https://learn.microsoft.com/windows/win32/api/wingdi/ns-wingdi-displayconfig_target_device_name_flags
+            var forced = new List<WindowsDisplayTarget>();
+            var monitorPaths = new List<string>();
+            foreach (var target in Targets)
+            {
+                if ((target.Kind == "physical" || target.Kind == "virtual") && !string.IsNullOrEmpty(target.MonitorDevicePath))
+                    monitorPaths.Add(target.MonitorDevicePath);
+                bool nvidia = false;
+                foreach (string hwid in target.HardwareIds)
+                    if (hwid.StartsWith(@"PCI\VEN_10DE&", StringComparison.OrdinalIgnoreCase)) nvidia = true;
+                if (target.Kind != "unknown" || !nvidia || target.NameFlags != 2 || (target.Active && (target.StatusFlags & 0x1c) == 0) ||
+                    Classify(target.OutputTechnology, false, 0) != "physical" ||
+                    !string.IsNullOrEmpty(target.TargetName) || !string.IsNullOrEmpty(target.MonitorDevicePath)) continue;
+                if (target.Active)
+                {
+                    if (string.IsNullOrEmpty(target.DeviceName)) continue;
+                    var monitor = new Native.DISPLAY_DEVICE(); monitor.cb = Marshal.SizeOf(typeof(Native.DISPLAY_DEVICE));
+                    if (Native.EnumDisplayDevices(target.DeviceName, 0, ref monitor, 1)) continue;
+                }
+                forced.Add(target);
+            }
+            if (forced.Count != 0)
+            {
+                string evidenceError;
+                if (Native.PresentMonitorsMapped(monitorPaths, out evidenceError))
+                    foreach (var target in forced) target.Kind = "fallback";
+                else Fail(evidenceError);
+            }
+            foreach (var target in Targets)
+            {
+                if (target.Kind == "physical") { PhysicalConnected++; if (target.Active) PhysicalActive++; }
+                else if (target.Kind == "unknown") UnknownConnected++;
+            }
+            if (UnknownConnected != 0) Fail("A connected display's physical/virtual type could not be verified");
+        }
+
+        public void Describe(DisplayInfo display)
+        {
+            var keys = new List<string>();
+            bool physical = false, unknown = false, virtualTarget = false, managed = true, anyActive = false;
+            WindowsDisplayTarget first = null;
+            foreach (var target in Targets)
+            {
+                anyActive |= target.Active;
+                if (!target.Active || !string.Equals(target.DeviceName, display.DeviceName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (first == null) first = target;
+                keys.Add(target.StableKey);
+                physical |= target.Kind == "physical";
+                unknown |= target.Kind == "unknown";
+                virtualTarget |= target.Kind == "virtual";
+                managed &= target.ManagedVirtual;
+                if (target.SourceBounds != display.Bounds) Fail("Display bounds changed during enumeration");
+            }
+            display.TargetCount = keys.Count;
+            if (first != null)
+            {
+                display.Kind = physical ? "physical" : unknown ? "unknown" : virtualTarget ? "virtual" : "fallback";
+                display.ManagedVirtual = managed && keys.Count == 1 && display.Kind == "virtual";
+                if (!string.IsNullOrEmpty(first.TargetName)) display.Name = first.TargetName;
+                keys.Sort(StringComparer.Ordinal);
+                display.StableKey = keys.Count == 1 ? keys[0] : "windows-clone:" + string.Join("|", keys.ToArray());
+            }
+            else
+            {
+                display.Kind = Reliable && !anyActive ? "fallback" : "unknown";
+                display.StableKey = "windows-" + display.Kind + ":" + (display.DeviceName ?? "").ToLowerInvariant();
+            }
+        }
+
+        public void ValidateDisplays(List<DisplayInfo> displays)
+        {
+            foreach (var target in Targets)
+            {
+                if (!target.Active) continue;
+                bool found = false;
+                foreach (var display in displays)
+                    if (string.Equals(display.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase)) found = true;
+                if (!found) Fail("An active display source disappeared during enumeration");
+            }
+            if (!Reliable)
+                foreach (var display in displays)
+                    if (display.Kind == "fallback") { display.Kind = "unknown"; display.StableKey = "windows-unknown:" + (display.DeviceName ?? "").ToLowerInvariant(); }
+        }
+    }
+
     static class Displays
     {
         public static List<DisplayInfo> List()
+        {
+            // Frames and input need fresh active identities, not every possible source/target pairing.
+            return List(WindowsTopology.Read(false));
+        }
+
+        public static List<DisplayInfo> List(out WindowsTopology topology)
+        {
+            topology = WindowsTopology.Read(true);
+            return List(topology);
+        }
+
+        static List<DisplayInfo> List(WindowsTopology topology)
         {
             var displays = new List<DisplayInfo>();
             Native.MonitorEnumProc callback = delegate (IntPtr monitor, IntPtr hdc, ref Native.RECT rect, IntPtr data)
@@ -228,19 +550,88 @@ namespace PaseoScreen
                 if (Native.GetMonitorInfo(monitor, ref info))
                 {
                     var bounds = Rectangle.FromLTRB(info.rcMonitor.left, info.rcMonitor.top, info.rcMonitor.right, info.rcMonitor.bottom);
-                    displays.Add(new DisplayInfo
+                    var display = new DisplayInfo
                     {
                         Id = DisplayNumber(info.szDevice, displays.Count + 1),
                         Bounds = bounds,
                         Primary = (info.dwFlags & 1) != 0,
                         Name = FriendlyName(info.szDevice, displays.Count + 1),
-                    });
+                        DeviceName = info.szDevice,
+                        WorkArea = Rectangle.FromLTRB(info.rcWork.left, info.rcWork.top, info.rcWork.right, info.rcWork.bottom),
+                    };
+                    topology.Describe(display);
+                    displays.Add(display);
                 }
+                else topology.Fail("GetMonitorInfo failed during display enumeration");
                 return true;
             };
-            Native.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero);
+            if (!Native.EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero))
+                topology.Fail("EnumDisplayMonitors failed");
             GC.KeepAlive(callback);
+            topology.ValidateDisplays(displays);
             return displays;
+        }
+
+        public static DisplayInfo ByKey(string key, List<DisplayInfo> displays)
+        {
+            if (string.IsNullOrEmpty(key)) throw new HelperError("A display stableKey is required");
+            DisplayInfo found = null;
+            foreach (var display in displays)
+            {
+                if (!string.Equals(display.StableKey, key, StringComparison.Ordinal)) continue;
+                if (found != null) throw new HelperError("Display identity is ambiguous; wait for a fresh frame");
+                found = display;
+            }
+            if (found == null) throw new HelperError("Display changed; wait for a fresh frame");
+            return found;
+        }
+
+        static DisplayInfo ConfigurableVirtual(string key, out WindowsTopology topology)
+        {
+            var displays = List(out topology);
+            if (!topology.Reliable) throw new HelperError("Display topology is unavailable: " + topology.Error);
+            if (topology.PhysicalConnected != 0 || topology.UnknownConnected != 0)
+                throw new HelperError("A physical or unidentified display is connected; virtual display configuration is refused");
+            var display = ByKey(key, displays);
+            if (display.Kind != "virtual" || !display.ManagedVirtual || display.TargetCount != 1 || string.IsNullOrEmpty(display.DeviceName))
+                throw new HelperError("Only a verified, active VirtualDrivers VDD display can be configured");
+            if (Native.SecureDesktopShowing()) throw new HelperError("Unlock the interactive desktop before configuring a virtual display");
+            return display;
+        }
+
+        public static Dictionary<string, object> ConfigureVirtual(Dictionary<string, object> request)
+        {
+            if ((request.ContainsKey("width") && Program.Num(request, "width", double.NaN) != 1920) ||
+                (request.ContainsKey("height") && Program.Num(request, "height", double.NaN) != 1080))
+                throw new HelperError("The managed virtual display supports only the requested 1920x1080 profile");
+            string key = Program.Str(request, "stableKey");
+            WindowsTopology topology;
+            var display = ConfigurableVirtual(key, out topology);
+            var mode = new Native.DEVMODE();
+            mode.dmSize = (ushort)Marshal.SizeOf(typeof(Native.DEVMODE));
+            if (!Native.EnumDisplaySettings(display.DeviceName, -1, ref mode))
+                throw new HelperError("Could not read the virtual display's current mode");
+            if (mode.dmPelsWidth == 1920 && mode.dmPelsHeight == 1080)
+                return new Dictionary<string, object> { { "display", display.Json() }, { "changed", false }, { "windowsTopology", topology.Json() } };
+
+            // Only this named, already active VDD source. No position, primary, registry or global change.
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-changedisplaysettingsexw
+            mode.dmDriverExtra = 0;
+            mode.dmFields = 0x00080000 | 0x00100000; // DM_PELSWIDTH | DM_PELSHEIGHT
+            mode.dmPelsWidth = 1920; mode.dmPelsHeight = 1080;
+            int test = Native.ChangeDisplaySettingsEx(display.DeviceName, ref mode, IntPtr.Zero, 2, IntPtr.Zero); // CDS_TEST
+            if (test != 0) throw new HelperError("The VDD driver rejected 1920x1080 (" + test + ")");
+
+            // Re-read connectivity and identity after CDS_TEST, immediately before the only write.
+            var current = ConfigurableVirtual(key, out topology);
+            if (!string.Equals(current.DeviceName, display.DeviceName, StringComparison.OrdinalIgnoreCase) || current.Bounds != display.Bounds)
+                throw new HelperError("Display changed; wait for a fresh frame");
+            int changed = Native.ChangeDisplaySettingsEx(current.DeviceName, ref mode, IntPtr.Zero, 0, IntPtr.Zero);
+            if (changed != 0) throw new HelperError("The VDD mode change failed (" + changed + ")");
+            var updated = ByKey(key, List(out topology));
+            if (updated.Bounds.Width != 1920 || updated.Bounds.Height != 1080)
+                throw new HelperError("The VDD driver accepted the mode but 1920x1080 is not active; refresh display status");
+            return new Dictionary<string, object> { { "display", updated.Json() }, { "changed", true }, { "windowsTopology", topology.Json() } };
         }
 
         /// "\\.\DISPLAY2" is display 2; the number stays the same while the monitor is connected.
@@ -501,7 +892,11 @@ namespace PaseoScreen
             if (Native.SecureDesktopShowing()) throw new HelperError("Unlock the interactive desktop; secure desktop input is refused.");
             if (Program.Has(request, "expectedWindow")) WindowsScene.CheckTarget(request);
             var displays = Displays.List();
+            if (request.ContainsKey("expectedDisplayKey") && displays.Count == 0)
+                throw new HelperError("Display changed; wait for a fresh frame");
             var display = Displays.Resolve(request.ContainsKey("display") ? request["display"] : null, displays);
+            if (request.ContainsKey("expectedDisplayKey") && !string.Equals(Program.Str(request, "expectedDisplayKey"), display.StableKey, StringComparison.Ordinal))
+                throw new HelperError("Display changed; wait for a fresh frame");
             var events = request.ContainsKey("events") ? request["events"] as IList : null;
             int handled = 0;
             if (events != null)
@@ -817,6 +1212,15 @@ namespace PaseoScreen
         [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc callback, IntPtr data);
         [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr window);
+        [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr window);
+        [DllImport("user32.dll")] static extern IntPtr GetDesktopWindow();
+        [DllImport("user32.dll")] static extern IntPtr GetShellWindow();
+        [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+        [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window, uint command);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowLong(IntPtr window, int index);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder text, int length);
+        [DllImport("user32.dll", SetLastError = true)] static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags);
+        [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr window, uint attribute, out uint value, uint size);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr window, StringBuilder text, int length);
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
@@ -882,6 +1286,164 @@ namespace PaseoScreen
             if (IsIconic(window)) ShowWindow(window, 9);
             SetForegroundWindow(window);
             return new Dictionary<string, object> { { "focused", Native.GetForegroundWindow() == window } };
+        }
+
+        static bool UserWindow(IntPtr window, bool movable)
+        {
+            if (!IsWindowVisible(window) || window == ControlNotice.WindowHandle ||
+                window == GetDesktopWindow() || window == GetShellWindow() || GetAncestor(window, 2) != window)
+                return false;
+            uint style = unchecked((uint)GetWindowLong(window, -16));
+            uint extended = unchecked((uint)GetWindowLong(window, -20));
+            if ((style & 0x40000000U) != 0 || (extended & (0x80U | 0x08000000U)) != 0)
+                return false; // Child windows, tool windows and no-activate overlays.
+            if (movable && (IsIconic(window) || IsZoomed(window) || GetWindow(window, 4) != IntPtr.Zero ||
+                (style & 0x08000000U) != 0 || (extended & 0x8U) != 0)) return false;
+            var className = new StringBuilder(256);
+            if (GetClassName(window, className, className.Capacity) == 0) return false;
+            string name = className.ToString();
+            if (name == "Shell_TrayWnd" || name == "Shell_SecondaryTrayWnd" || name == "Progman" || name == "WorkerW") return false;
+            var title = new StringBuilder(2);
+            if (GetWindowText(window, title, title.Capacity) == 0 && movable) return false;
+            uint cloaked;
+            try { if (DwmGetWindowAttribute(window, 14, out cloaked, 4) == 0 && cloaked != 0) return false; }
+            catch (DllNotFoundException) { return false; }
+            catch (EntryPointNotFoundException) { return false; }
+            uint pid; GetWindowThreadProcessId(window, out pid);
+            using (var self = Process.GetCurrentProcess())
+            {
+                if (pid == 0 || pid == (uint)self.Id) return false;
+                using (var process = Process.GetProcessById((int)pid)) return process.SessionId == self.SessionId;
+            }
+        }
+
+        static bool OnDisplay(IntPtr window, DisplayInfo display)
+        {
+            // MonitorFromWindow uses the pre-minimized rectangle for minimized windows.
+            // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-monitorfromwindow
+            var monitor = MonitorFromWindow(window, 0);
+            if (monitor == IntPtr.Zero) return false;
+            var info = new Native.MONITORINFOEX(); info.cbSize = Marshal.SizeOf(typeof(Native.MONITORINFOEX));
+            if (!Native.GetMonitorInfo(monitor, ref info)) throw new HelperError("Could not verify a window's display");
+            return string.Equals(info.szDevice, display.DeviceName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static Dictionary<string, object> Migrate(Dictionary<string, object> request)
+        {
+            // The server exposes this command only after an explicit human action and ownership
+            // takeover. Neither topology polling nor the capture/input paths ever call it.
+            if (Native.SecureDesktopShowing()) throw new HelperError("Unlock the interactive desktop before moving windows");
+            WindowsTopology topology;
+            var displays = Displays.List(out topology);
+            if (!topology.Reliable) throw new HelperError("Display topology is unavailable: " + topology.Error);
+            var from = Displays.ByKey(Program.Str(request, "from"), displays);
+            var to = Displays.ByKey(Program.Str(request, "to"), displays);
+            if (from.Kind != "virtual" || to.Kind != "physical" || from.StableKey == to.StableKey || from.Bounds.IntersectsWith(to.Bounds))
+                throw new HelperError("Windows can only move from an active virtual display to a separate active physical display");
+            Rectangle area = to.WorkArea;
+            if (area.Width <= 0 || area.Height <= 0 || !to.Bounds.Contains(area)) throw new HelperError("The physical display's work area is unavailable");
+            int skipped = 0;
+            var pending = new Dictionary<IntPtr, uint>();
+            var verified = new HashSet<IntPtr>();
+            var failures = new HashSet<IntPtr>();
+            string aborted = null;
+            EnumProc callback = delegate(IntPtr window, IntPtr data)
+            {
+                try
+                {
+                    Native.RECT nativeRect;
+                    if (!UserWindow(window, true) || !Native.GetWindowRect(window, out nativeRect)) { skipped++; return true; }
+                    var rect = Rectangle.FromLTRB(nativeRect.left, nativeRect.top, nativeRect.right, nativeRect.bottom);
+                    if (rect.Width <= 0 || rect.Height <= 0 || !from.Bounds.Contains(rect)) { skipped++; return true; }
+                    // Fresh active identities/bounds for every candidate; stop on hotplug or a locked
+                    // desktop instead of moving the remaining windows onto an unrelated source.
+                    if (Native.SecureDesktopShowing()) { aborted = "Desktop locked during window migration"; return false; }
+                    var current = Displays.List();
+                    var currentFrom = Displays.ByKey(from.StableKey, current);
+                    var currentTo = Displays.ByKey(to.StableKey, current);
+                    if (currentFrom.Kind != "virtual" || currentTo.Kind != "physical" || currentFrom.Bounds != from.Bounds || currentTo.Bounds != to.Bounds || currentTo.WorkArea != area)
+                    {
+                        aborted = "Display changed during window migration"; return false;
+                    }
+                    // The user/app may have moved or closed the window during the topology query.
+                    if (!UserWindow(window, true) || !Native.GetWindowRect(window, out nativeRect)) { skipped++; return true; }
+                    rect = Rectangle.FromLTRB(nativeRect.left, nativeRect.top, nativeRect.right, nativeRect.bottom);
+                    if (rect.Width <= 0 || rect.Height <= 0 || !from.Bounds.Contains(rect)) { skipped++; return true; }
+                    int width = Math.Min(rect.Width, area.Width), height = Math.Min(rect.Height, area.Height);
+                    int x = area.Left + Math.Min(Math.Max(0, rect.Left - from.Bounds.Left), area.Width - width);
+                    int y = area.Top + Math.Min(Math.Max(0, rect.Top - from.Bounds.Top), area.Height - height);
+                    // No activation, z-order/owner change or blocking calls into another application's UI.
+                    // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setwindowpos
+                    uint pid; GetWindowThreadProcessId(window, out pid);
+                    if (SetWindowPos(window, IntPtr.Zero, x, y, width, height, 0x0010 | 0x0004 | 0x0200 | 0x4000)) pending[window] = pid;
+                    else failures.Add(window);
+                }
+                catch (HelperError error) { aborted = error.Message; return false; }
+                catch (ArgumentException) { skipped++; }
+                catch (InvalidOperationException) { skipped++; }
+                catch (System.ComponentModel.Win32Exception) { failures.Add(window); }
+                catch (Exception error) { aborted = "Window migration failed: " + error.Message; return false; }
+                return true;
+            };
+            bool enumerated = EnumWindows(callback, IntPtr.Zero); GC.KeepAlive(callback);
+            if (!enumerated && aborted == null) aborted = "Window enumeration failed";
+
+            // Async success only means the other UI thread accepted the request. Give all requests a
+            // single shared one-second budget, and never report a pending request as a completed move.
+            var timer = Stopwatch.StartNew();
+            while (pending.Count != 0)
+            {
+                foreach (var window in new List<IntPtr>(pending.Keys))
+                {
+                    uint pid; GetWindowThreadProcessId(window, out pid);
+                    if (pid == 0 || pid != pending[window]) { pending.Remove(window); skipped++; continue; }
+                    Native.RECT rect;
+                    if (Native.GetWindowRect(window, out rect) && rect.right > rect.left && rect.bottom > rect.top &&
+                        area.Contains(Rectangle.FromLTRB(rect.left, rect.top, rect.right, rect.bottom)))
+                    {
+                        verified.Add(window); pending.Remove(window);
+                    }
+                }
+                long wait = 1000 - timer.ElapsedMilliseconds;
+                if (pending.Count == 0 || wait <= 0) break;
+                Thread.Sleep((int)Math.Min(20, wait));
+            }
+            foreach (var window in pending.Keys) failures.Add(window);
+
+            // Minimized/maximized, owned, disabled, topmost or spanning user windows are not silently
+            // restored/moved. If any remain on the virtual monitor, fail closed so the server keeps it
+            // enabled. This also catches windows opened while the earlier moves were in flight.
+            int remaining = 0;
+            EnumProc check = delegate(IntPtr window, IntPtr data)
+            {
+                try
+                {
+                    if (UserWindow(window, false) && OnDisplay(window, from))
+                    {
+                        remaining++; failures.Add(window); verified.Remove(window);
+                    }
+                }
+                catch (Exception error) { aborted = "Could not verify remaining windows: " + error.Message; return false; }
+                return true;
+            };
+            if (!EnumWindows(check, IntPtr.Zero) && aborted == null) aborted = "Remaining window enumeration failed";
+            GC.KeepAlive(check);
+            try
+            {
+                var final = Displays.List(out topology);
+                var finalFrom = Displays.ByKey(from.StableKey, final);
+                var finalTo = Displays.ByKey(to.StableKey, final);
+                if (!topology.Reliable || finalFrom.Kind != "virtual" || finalTo.Kind != "physical" ||
+                    finalFrom.Bounds != from.Bounds || finalTo.Bounds != to.Bounds || finalTo.WorkArea != area || Native.SecureDesktopShowing())
+                    aborted = "Desktop or display topology changed during window migration";
+            }
+            catch (HelperError error) { aborted = error.Message; }
+            var result = new Dictionary<string, object> {
+                { "from", from.StableKey }, { "to", to.StableKey }, { "moved", verified.Count }, { "skipped", skipped },
+                { "failed", failures.Count + (aborted == null ? 0 : 1) }, { "remaining", remaining }
+            };
+            if (aborted != null) result["interrupted"] = aborted;
+            return result;
         }
 
         public static Dictionary<string, object> Signature(Dictionary<string, object> request)
@@ -1024,6 +1586,190 @@ namespace PaseoScreen
             [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
         }
 
+        // CCD structures use DWORD/UINT32, including BOOL, with 32-bit LUID members on both ABIs.
+        // https://learn.microsoft.com/windows/win32/api/wingdi/ns-wingdi-displayconfig_path_info
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LUID { public uint LowPart; public int HighPart; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_PATH_SOURCE_INFO { public LUID adapterId; public uint id, modeInfoIdx, statusFlags; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_RATIONAL { public uint numerator, denominator; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_PATH_TARGET_INFO
+        {
+            public LUID adapterId;
+            public uint id, modeInfoIdx, outputTechnology, rotation, scaling;
+            public DISPLAYCONFIG_RATIONAL refreshRate;
+            public uint scanLineOrdering;
+            public int targetAvailable;
+            public uint statusFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_PATH_INFO
+        {
+            public DISPLAYCONFIG_PATH_SOURCE_INFO sourceInfo;
+            public DISPLAYCONFIG_PATH_TARGET_INFO targetInfo;
+            public uint flags;
+        }
+
+        // The mode union is 48 bytes (includes the 64-bit pixel clock). Only source fields are read.
+        [StructLayout(LayoutKind.Explicit, Size = 64)]
+        public struct DISPLAYCONFIG_MODE_INFO
+        {
+            [FieldOffset(0)] public uint infoType;
+            [FieldOffset(4)] public uint id;
+            [FieldOffset(8)] public LUID adapterId;
+            [FieldOffset(16)] public uint width;
+            [FieldOffset(20)] public uint height;
+            [FieldOffset(28)] public POINT position;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DISPLAYCONFIG_DEVICE_INFO_HEADER { public uint type, size; public LUID adapterId; public uint id; }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DISPLAYCONFIG_SOURCE_DEVICE_NAME
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string viewGdiDeviceName;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DISPLAYCONFIG_TARGET_DEVICE_NAME
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            public uint flags, outputTechnology;
+            public ushort edidManufactureId, edidProductCodeId;
+            public uint connectorInstance;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string monitorFriendlyDeviceName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string monitorDevicePath;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DISPLAYCONFIG_ADAPTER_NAME
+        {
+            public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string adapterDevicePath;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct DEVMODE
+        {
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+            public ushort dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+            public uint dmFields;
+            public POINT dmPosition;
+            public uint dmDisplayOrientation, dmDisplayFixedOutput;
+            public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+            public ushort dmLogPixels;
+            public uint dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+            public uint dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SP_DEVICE_INTERFACE_DATA { public uint cbSize; public Guid interfaceClassGuid; public uint flags; public IntPtr reserved; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct SP_DEVINFO_DATA { public uint cbSize; public Guid classGuid; public uint devInst; public IntPtr reserved; }
+
+        [DllImport("user32.dll")] public static extern int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);
+        [DllImport("user32.dll")] public static extern int QueryDisplayConfig(uint flags, ref uint pathCount, [Out] DISPLAYCONFIG_PATH_INFO[] paths, ref uint modeCount, [Out] DISPLAYCONFIG_MODE_INFO[] modes, IntPtr topologyId);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME info);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_TARGET_DEVICE_NAME info);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_ADAPTER_NAME info);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE mode);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int ChangeDisplaySettingsEx(string deviceName, ref DEVMODE mode, IntPtr window, uint flags, IntPtr param);
+        [DllImport("setupapi.dll", SetLastError = true)] static extern IntPtr SetupDiCreateDeviceInfoList(IntPtr classGuid, IntPtr window);
+        [DllImport("setupapi.dll", SetLastError = true)] static extern bool SetupDiDestroyDeviceInfoList(IntPtr devices);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr SetupDiGetClassDevs(ref Guid classGuid, string enumerator, IntPtr window, uint flags);
+        [DllImport("setupapi.dll", SetLastError = true)] static extern bool SetupDiEnumDeviceInfo(IntPtr devices, uint index, ref SP_DEVINFO_DATA device);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool SetupDiOpenDeviceInterface(IntPtr devices, string devicePath, uint flags, ref SP_DEVICE_INTERFACE_DATA info);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool SetupDiGetDeviceInterfaceDetail(IntPtr devices, ref SP_DEVICE_INTERFACE_DATA info, IntPtr detail, uint detailSize, out uint requiredSize, ref SP_DEVINFO_DATA device);
+        [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool SetupDiGetDeviceRegistryProperty(IntPtr devices, ref SP_DEVINFO_DATA device, uint property, out uint type, [Out] byte[] buffer, uint size, out uint requiredSize);
+
+        public static bool PresentMonitorsMapped(List<string> monitorPaths, out string error)
+        {
+            error = null;
+            var monitorClass = new Guid("4d36e96e-e325-11ce-bfc1-08002be10318");
+            // DIGCF_PRESENT excludes phantom monitor devnodes left behind after unplugging.
+            // https://learn.microsoft.com/windows/win32/api/setupapi/nf-setupapi-setupdigetclassdevsw
+            IntPtr present = SetupDiGetClassDevs(ref monitorClass, null, IntPtr.Zero, 2);
+            if (present == new IntPtr(-1)) { error = "Present monitor enumeration failed (" + Marshal.GetLastWin32Error() + ")"; return false; }
+            var devnodes = new HashSet<uint>();
+            try
+            {
+                for (uint index = 0; ; index++)
+                {
+                    var device = new SP_DEVINFO_DATA(); device.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+                    if (!SetupDiEnumDeviceInfo(present, index, ref device))
+                    {
+                        int result = Marshal.GetLastWin32Error();
+                        if (result == 259) break; // ERROR_NO_MORE_ITEMS is the only successful end.
+                        error = "Present monitor enumeration failed (" + result + ")"; return false;
+                    }
+                    devnodes.Add(device.devInst);
+                }
+            }
+            finally { SetupDiDestroyDeviceInfoList(present); }
+            if (devnodes.Count == 0) return true;
+
+            // Resolve other QDC monitor interface paths to exact devnodes. Do not parse symbolic paths
+            // or presume every present monitor is the VDD just because a VDD driver is installed.
+            IntPtr mapped = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+            if (mapped == new IntPtr(-1)) { error = "Monitor device mapping failed"; return false; }
+            try
+            {
+                foreach (string path in monitorPaths)
+                {
+                    var iface = new SP_DEVICE_INTERFACE_DATA(); iface.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVICE_INTERFACE_DATA));
+                    if (!SetupDiOpenDeviceInterface(mapped, path, 0, ref iface)) { error = "A monitor interface changed during display detection"; return false; }
+                    var device = new SP_DEVINFO_DATA(); device.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+                    uint required;
+                    bool found = SetupDiGetDeviceInterfaceDetail(mapped, ref iface, IntPtr.Zero, 0, out required, ref device);
+                    if (!found && Marshal.GetLastWin32Error() != 122) { error = "A monitor devnode could not be verified"; return false; }
+                    devnodes.Remove(device.devInst);
+                }
+                if (devnodes.Count == 0) return true;
+                error = "An unmatched present monitor prevents forced-display fallback";
+                return false;
+            }
+            finally { SetupDiDestroyDeviceInfoList(mapped); }
+        }
+
+        public static string[] AdapterHardwareIds(string adapterPath)
+        {
+            if (string.IsNullOrEmpty(adapterPath)) return new string[0];
+            // Resolve the interface to its devnode. A ROOT\\DISPLAY instance path says nothing about
+            // the driver; the exact HardwareIDs property identifies VirtualDrivers' MttVDD instead.
+            // https://learn.microsoft.com/windows/win32/api/setupapi/nf-setupapi-setupdigetdeviceinterfacedetailw
+            IntPtr devices = SetupDiCreateDeviceInfoList(IntPtr.Zero, IntPtr.Zero);
+            if (devices == new IntPtr(-1)) return new string[0];
+            try
+            {
+                var iface = new SP_DEVICE_INTERFACE_DATA(); iface.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVICE_INTERFACE_DATA));
+                if (!SetupDiOpenDeviceInterface(devices, adapterPath, 0, ref iface)) return new string[0];
+                var device = new SP_DEVINFO_DATA(); device.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+                uint required;
+                // With a NULL detail buffer this returns ERROR_INSUFFICIENT_BUFFER but fills DeviceInfoData.
+                // The documented behavior avoids variable-length interface-detail ABI differences.
+                bool found = SetupDiGetDeviceInterfaceDetail(devices, ref iface, IntPtr.Zero, 0, out required, ref device);
+                if (!found && Marshal.GetLastWin32Error() != 122) return new string[0];
+                uint type;
+                SetupDiGetDeviceRegistryProperty(devices, ref device, 1, out type, null, 0, out required); // SPDRP_HARDWAREID
+                if (required == 0 || required > 65536 || (required & 1) != 0) return new string[0];
+                var buffer = new byte[required];
+                if (!SetupDiGetDeviceRegistryProperty(devices, ref device, 1, out type, buffer, (uint)buffer.Length, out required) || type != 7 || required > buffer.Length)
+                    return new string[0]; // REG_MULTI_SZ only; fail closed if the driver cannot be verified.
+                return Encoding.Unicode.GetString(buffer, 0, (int)required).Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries);
+            }
+            finally { SetupDiDestroyDeviceInfoList(devices); }
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
 
@@ -1051,7 +1797,7 @@ namespace PaseoScreen
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr window, out RECT rect);
         [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
         [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
-        [DllImport("user32.dll")] static extern IntPtr SetProcessDpiAwarenessContext(IntPtr context);
+        [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] static extern bool SetProcessDpiAwarenessContext(IntPtr context);
         [DllImport("shcore.dll")] static extern int SetProcessDpiAwareness(int value);
         [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
@@ -1066,7 +1812,7 @@ namespace PaseoScreen
             // Each call exists from a later Windows version than the next; older ones fall through.
             try
             {
-                if (SetProcessDpiAwarenessContext(new IntPtr(-4)) != IntPtr.Zero) return;
+                if (SetProcessDpiAwarenessContext(new IntPtr(-4))) return;
             }
             catch (DllNotFoundException) { }
             catch (EntryPointNotFoundException) { }
@@ -1092,7 +1838,7 @@ namespace PaseoScreen
             {
                 var name = new StringBuilder(256);
                 int needed;
-                if (!GetUserObjectInformation(desktop, 2, name, name.Capacity * 2, out needed)) return false;
+                if (!GetUserObjectInformation(desktop, 2, name, name.Capacity * 2, out needed)) return true;
                 return Process.GetCurrentProcess().SessionId == 0 || !string.Equals(name.ToString(), "Default", StringComparison.OrdinalIgnoreCase);
             }
             finally

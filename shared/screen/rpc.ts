@@ -14,8 +14,32 @@ export const displaySchema = z.object({
   builtin: z.boolean(),
   /** Monitor name as shown in System Settings, such as "Built-in Retina Display". */
   name: z.string(),
+  kind: z.enum(["physical", "virtual", "fallback", "unknown"]).optional(),
+  stableKey: z.string().optional(),
+  deviceName: z.string().optional(),
+  managedVirtual: z.boolean().optional(),
 });
 export type ScreenDisplay = z.infer<typeof displaySchema>;
+
+export const displayFallbackSchema = z.object({
+  enabled: z.boolean(),
+  provisioned: z.boolean(),
+  state: z.enum(["disabled", "physical", "headless", "starting", "virtual", "return-available", "unknown", "error"]),
+  message: z.string(),
+  error: z.string().nullable(),
+  physicalConnected: z.number(),
+  physicalActive: z.number(),
+  selectedKey: z.string().nullable(),
+  returnDisplay: z.number().nullable(),
+});
+export type DisplayFallbackStatus = z.infer<typeof displayFallbackSchema>;
+
+export const windowsTopologySchema = z.object({
+  reliable: z.boolean(),
+  physicalConnected: z.number(),
+  physicalActive: z.number(),
+  error: z.string().optional(),
+});
 
 const statusSchema = z.object({
   supported: z.boolean(),
@@ -42,6 +66,8 @@ const statusSchema = z.object({
   awaitingApproval: z.boolean().optional(),
   /** Wayland: why the last request was not approved, such as the dialog being declined. */
   permissionError: z.string().optional(),
+  windowsTopology: windowsTopologySchema.optional(),
+  displayFallback: displayFallbackSchema.optional(),
 });
 export type ScreenStatus = z.infer<typeof statusSchema>;
 
@@ -130,9 +156,12 @@ export const inputEventSchema = z.discriminatedUnion("type", [
 export type ScreenInputEvent = z.infer<typeof inputEventSchema>;
 export type ScreenModifier = z.infer<typeof modifier>;
 
+/** Releases only input already held by this plugin; cannot send clicks, text or acquire control. */
+export const releaseInputRpc = defineRpc({ name: "screen.release-input", input: z.object({}), output: z.object({}) });
+
 export const inputRpc = defineRpc({
   name: "screen.input",
-  input: z.object({ display: z.number().optional(), events: z.array(inputEventSchema).max(200) }),
+  input: z.object({ display: z.number().optional(), expectedDisplayKey: z.string().max(1024).optional(), events: z.array(inputEventSchema).max(200) }),
   output: z.object({
     handled: z.number(),
     /** Display the pointer ended on, which differs from `display` after a drag onto another display. */
@@ -168,6 +197,13 @@ export const chooseDisplayRpc = defineRpc({
   name: "screen.choose-display",
   input: z.object({ display: z.number() }),
   output: z.object({}),
+});
+
+/** Driver installation is an explicit administrator action, never an RPC or automatic download. */
+export const displayFallbackRpc = defineRpc({
+  name: "screen.display-fallback",
+  input: z.object({ action: z.enum(["enable", "disable", "return-physical"]) }),
+  output: displayFallbackSchema,
 });
 
 export const videoOfferRpc = defineRpc({

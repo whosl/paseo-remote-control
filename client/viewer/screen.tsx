@@ -1,10 +1,10 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useRpc, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PixelRatio, Platform, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from "react-native";
-import { chooseDisplayRpc, requestPermissionsRpc, statusRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenInputEvent, type ScreenModifier, type ScreenStatus } from "../../shared/screen/rpc";
+import { chooseDisplayRpc, displayFallbackRpc, requestPermissionsRpc, statusRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenDisplay, type ScreenInputEvent, type ScreenModifier, type ScreenStatus } from "../../shared/screen/rpc";
 import { readLocalClipboard, useHostClipboard } from "./clipboard";
 import { useControlPause } from "./control";
 import { chrome, Control, Key } from "./controls";
@@ -28,11 +28,20 @@ export function RemoteScreen(props: PluginScreenProps) {
 
 function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled }: PluginScreenProps & { feedbackEnabled: boolean; setFeedbackEnabled(value: boolean): void }) {
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const queryClient = useQueryClient();
   const fetchStatus = useRpc(statusRpc);
   const status = useQuery({ queryKey: ["paseo-screen", host.id, "status"], queryFn: () => fetchStatus({}), refetchInterval: 5000 });
   const requestPermissions = useRpc(requestPermissionsRpc);
   const request = useMutation({ mutationFn: () => requestPermissions({}), onSuccess: () => void status.refetch() });
   const chooseDisplayOnHost = useRpc(chooseDisplayRpc);
+  const updateFallback = useRpc(displayFallbackRpc);
+  const fallbackChange = useMutation({
+    mutationFn: (action: "enable" | "disable" | "return-physical") => updateFallback({ action }),
+    onSuccess: (displayFallback) => {
+      queryClient.setQueryData<ScreenStatus>(["paseo-screen", host.id, "status"], (old) => old ? { ...old, displayFallback } : old);
+      void status.refetch();
+    },
+  });
   const offerVideo = useRpc(videoOfferRpc);
   const pingVideo = useRpc(videoPingRpc);
   const stopVideo = useRpc(videoStopRpc);
@@ -57,14 +66,18 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const lastAwake = useRef<ScreenStatus | null>(null);
   if (status.data && !status.data.error) lastGood.current = status.data;
   if (status.data && !status.data.error && status.data.displays.length) lastAwake.current = status.data;
-  const displays = lastAwake.current?.displays ?? [];
-  const display = displays.find((item) => item.id === chosenDisplay)
-    ?? displays.find((item) => item.id === lastAwake.current?.preferredDisplay)
+  const fallback = status.data?.displayFallback;
+  const managedSelection = fallback !== undefined;
+  // A managed host owns selection across hotplug; an old numeric ID may now identify another monitor.
+  const displays = managedSelection ? status.data?.displays ?? [] : lastAwake.current?.displays ?? [];
+  const display = displays.find((item) => !!fallback?.selectedKey && item.stableKey === fallback.selectedKey)
+    ?? (!managedSelection ? displays.find((item) => item.id === chosenDisplay) : undefined)
+    ?? displays.find((item) => item.id === (managedSelection ? status.data?.preferredDisplay : lastAwake.current?.preferredDisplay))
     ?? displays.find((item) => item.main) ?? displays[0];
   const chooseDisplay = useCallback((id: number) => {
     setChosenDisplay(id);
-    void chooseDisplayOnHost({ display: id }).catch((error) => setInputError(String(error)));
-  }, [chooseDisplayOnHost]);
+    void chooseDisplayOnHost({ display: id }).then(() => status.refetch()).catch((error) => setInputError(String(error)));
+  }, [chooseDisplayOnHost, status.refetch]);
   const canCapture = lastGood.current?.screenRecording === true;
   const hostPlatform = lastGood.current?.platform ?? "darwin";
   const mapping = useMemo(() => keyMapping(hostPlatform, isAppleClient()), [hostPlatform]);
@@ -75,16 +88,20 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const content = fitContent(stage, aspect, !isWeb && rotated);
   const quality = QUALITIES[qualityIndex]!;
   const wanted = content.width > 0 ? Math.ceil(content.width * Math.min(PixelRatio.get(), 2) / 160) * 160 : quality.maxWidth;
-  const direct = useDirectVideo(videoNode, canCapture && !paused && preferDirect && lastGood.current?.webrtc === true, display?.id, Math.max(320, Math.min(quality.maxWidth, wanted)), [30, 24, 15][qualityIndex]!, { offer: offerVideo, ping: pingVideo, stop: stopVideo });
-  const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true);
+  // Direct video does not carry frame display keys yet; managed hotplug uses identity-bearing JPEGs.
+  const direct = useDirectVideo(videoNode, canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true, display?.id, Math.max(320, Math.min(quality.maxWidth, wanted)), [30, 24, 15][qualityIndex]!, { offer: offerVideo, ping: pingVideo, stop: stopVideo });
+  const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true, display?.stableKey);
   const frameAspect = frames.display ? frames.display.width / frames.display.height : null;
   useEffect(() => { if (frameAspect) setAspect(frameAspect); }, [frameAspect]);
-  const send = useInputQueue(display?.id, setInputError, chooseDisplay);
+  const frameMatchesDisplay = !!frames.uri && !!frames.display && frames.display.id === display?.id
+    && (display?.stableKey === undefined || frames.display.stableKey === display.stableKey)
+    && (!fallback?.selectedKey || frames.display.stableKey === fallback.selectedKey);
   const ownership = useOwnership(host.id);
   const hostControlBase = useControlPause(host.id);
   const hostControl = { ...hostControlBase, paused: ownership.state?.paused ?? hostControlBase.paused };
   useEffect(() => { if (!hostControl.paused) setInputError(null); }, [hostControl.paused]);
-  const controlling = control && !paused && lastGood.current?.accessibility === true && !hostControl.paused && ownership.known && ownership.state?.mode !== "agent" && !ownership.changing;
+  const controlling = ((direct.active && !managedSelection) || frameMatchesDisplay) && !fallbackChange.isPending && control && !paused && lastGood.current?.accessibility === true && !hostControl.paused && ownership.known && ownership.state?.mode !== "agent" && !ownership.changing;
+  const send = useInputQueue(display?.id, setInputError, chooseDisplay, frames.display?.stableKey, controlling);
   const clipboard = useHostClipboard(controlling && ownership.state?.humanPriority === true);
   const pasteOnHost = useCallback((text: string, shift = false) => {
     if (!controlling) return;
@@ -110,6 +127,14 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
 
   return (
     <View ref={setRootNode} style={styles.screen}>
+      {fallback?.state === "return-available" ? <View accessibilityLiveRegion="polite" style={styles.fallbackBanner}>
+        <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+          <Text style={styles.rowTitle}>Physical display reconnected</Text>
+          <Text style={styles.description}>Keep using the virtual display, or switch back when ready.</Text>
+          {fallbackChange.error ? <Text style={styles.description}>{fallbackChange.error.message}</Text> : null}
+        </View>
+        <Action styles={styles} label={fallbackChange.isPending ? "Switching…" : "Switch back"} disabled={fallbackChange.isPending || fallback.returnDisplay === null} onPress={() => fallbackChange.mutate("return-physical")} />
+      </View> : null}
       <View style={styles.viewport} onLayout={(event: LayoutChangeEvent) => setStage(event.nativeEvent.layout)}>
         <View style={styles.picture}>
           {frames.uri ? <TouchStage uri={paused && direct.still ? direct.still : frames.uri} stage={stage} content={content} rotated={!isWeb && rotated} controlling={controlling} mode={inputMode} send={send} onZoomChange={setZoom} onPictureNode={setViewNode} onVideoNode={setVideoNode} />
@@ -183,12 +208,27 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.panelBody}>
             {panel === "displays" ? <>
               <Text style={styles.description}>Choose the screen you want to work on.</Text>
-              {displays.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`View ${item.name}`} accessibilityState={{ selected: item.id === display?.id }} onPress={() => { chooseDisplay(item.id); frames.wake(); setPanel(null); }} style={[styles.displayRow, item.id === display?.id && styles.selectedRow]}>
+              {fallback?.state === "virtual" || fallback?.state === "return-available" ? <Text style={styles.description}>Virtual fallback is active.</Text> : null}
+              {displays.map((item) => <Pressable key={item.stableKey ?? item.id} accessibilityRole="button" accessibilityLabel={`View ${item.name}, ${displayKindLabel(item, hostPlatform)}`} accessibilityState={{ selected: item.id === display?.id }} onPress={() => { chooseDisplay(item.id); frames.wake(); setPanel(null); }} style={[styles.displayRow, item.id === display?.id && styles.selectedRow]}>
                 <Icon name={item.builtin ? "Laptop" : "Monitor"} size={22} color={item.id === display?.id ? theme.colors.accent : theme.colors.foregroundMuted} />
-                <View style={{ flex: 1, gap: 4 }}><Text style={styles.rowTitle} numberOfLines={2}>{item.name}</Text><Text style={styles.description}>{item.pixelWidth} × {item.pixelHeight}{item.main ? " · Main" : ""}</Text></View>
+                <View style={{ flex: 1, gap: 4 }}><Text style={styles.rowTitle} numberOfLines={2}>{item.name}</Text><Text style={styles.description}>{displayKindLabel(item, hostPlatform)} · {item.pixelWidth} × {item.pixelHeight}{item.main ? " · Main" : ""}</Text></View>
                 {item.id === display?.id ? <Icon name="Check" size={18} color={theme.colors.accent} /> : null}
               </Pressable>)}
             </> : panel === "settings" ? <>
+              {hostPlatform === "win32" ? <>
+                <Text style={styles.sectionLabel}>WINDOWS HEADLESS</Text>
+                <Text style={styles.description}>Automatic fallback keeps a virtual screen available when physical displays disconnect. Reconnecting a display offers Switch back; it never switches silently.</Text>
+                <Text style={styles.description}>{!fallback ? "This host does not report headless fallback support. Update the host to configure it." : !fallback.provisioned ? "A virtual display driver must be installed and provisioned separately by an administrator on the host. This control does not install drivers." : fallback.message}</Text>
+                {fallback ? <Pressable accessibilityRole="switch" accessibilityLabel="Automatic headless fallback" accessibilityState={{ checked: fallback.enabled, disabled: !fallback.provisioned || fallbackChange.isPending }} disabled={!fallback.provisioned || fallbackChange.isPending} onPress={() => fallbackChange.mutate(fallback.enabled ? "disable" : "enable")} style={[styles.displayRow, (!fallback.provisioned || fallbackChange.isPending) && { opacity: 0.5 }]}>
+                  <Text style={[styles.rowTitle, { flex: 1 }]}>Automatic fallback</Text><Text style={styles.description}>{fallbackChange.isPending ? "Updating…" : fallback.enabled ? "On" : "Off"}</Text>
+                </Pressable> : null}
+                {fallback?.state === "virtual" || fallback?.state === "return-available" ? <Text style={styles.description}>Virtual fallback is active.</Text> : null}
+                {fallback && !fallback.provisioned && fallback.message ? <Text style={styles.description}>{fallback.message}</Text> : null}
+                {fallback?.state === "error" && fallback.provisioned ? <Action styles={styles} label={fallbackChange.isPending ? "Retrying…" : "Retry fallback"} disabled={fallbackChange.isPending} onPress={() => fallbackChange.mutate("enable")} /> : null}
+                {fallback?.error || fallbackChange.error ? <Text selectable accessibilityLiveRegion="polite" style={[styles.description, { color: theme.colors.statusWarning }]}>{fallbackChange.error?.message ?? fallback?.error}</Text> : null}
+                {status.data?.windowsTopology?.error ? <Text selectable style={styles.description}>{status.data.windowsTopology.error}</Text> : null}
+                <View style={styles.rule} />
+              </> : null}
               <Text style={styles.sectionLabel}>INPUT</Text>
               <Text style={styles.description}>Control owner: {ownership.state?.label ?? "Connecting…"}. Watching does not claim control. Your first input reserves human control until you explicitly allow agents again.</Text>
               <Action styles={styles} label={ownership.changing ? "Switching control…" : "Take control / stop agents"} disabled={ownership.changing} onPress={ownership.takeOver} />
@@ -202,7 +242,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
               <Text style={styles.sectionLabel}>LIVE CONNECTION</Text>
               <View style={styles.metrics}><Metric label={direct.active ? "VIDEO FPS" : "UPDATES/S"} value={paused ? "—" : (direct.active ? direct.fps : frames.fps).toFixed(1)} styles={styles} /><Metric label="ROUND TRIP" value={direct.active && direct.rttMs === null ? "—" : `${direct.active ? direct.rttMs : frames.latencyMs} ms`} styles={styles} /><Metric label={direct.active ? "VIDEO RATE" : "FRAME"} value={direct.active ? `${direct.kbps} kbps` : `${frames.kilobytes} KB`} styles={styles} /></View>
               <View style={styles.transport}><View style={[styles.dot, { backgroundColor: direct.active ? theme.colors.accent : theme.colors.foregroundMuted }]} /><Text style={styles.rowTitle}>{direct.active ? "WebRTC · H.264 · Encrypted" : direct.connecting ? "Connecting direct video…" : "Paseo · JPEG frames"}</Text></View>
-              {direct.supported && lastGood.current?.webrtc ? <><Action styles={styles} label={preferDirect ? "Use Paseo transport only" : "Try direct WebRTC video"} onPress={() => setPreferDirect(!preferDirect)} /><Text style={styles.description}>Direct video uses encrypted peer-to-peer media. Signalling and input stay on Paseo. If direct video cannot connect, frames automatically use Paseo instead.</Text>{direct.reason ? <Text style={styles.description}>{direct.reason}</Text> : null}</> : <Text style={styles.description}>Uses your existing Paseo connection. No separate VNC port or public screen URL.</Text>}
+              {direct.supported && !managedSelection && lastGood.current?.webrtc ? <><Action styles={styles} label={preferDirect ? "Use Paseo transport only" : "Try direct WebRTC video"} onPress={() => setPreferDirect(!preferDirect)} /><Text style={styles.description}>Direct video uses encrypted peer-to-peer media. Signalling and input stay on Paseo. If direct video cannot connect, frames automatically use Paseo instead.</Text>{direct.reason ? <Text style={styles.description}>{direct.reason}</Text> : null}</> : <Text style={styles.description}>Uses your existing Paseo connection. No separate VNC port or public screen URL.</Text>}
               {hostControl.known ? <><View style={styles.rule} /><Text style={styles.sectionLabel}>HOST SAFETY</Text><Text style={styles.description}>Unlike View only, this stops remote input for everyone connected to this computer.</Text><Action styles={styles} label={hostControl.changing ? "Updating…" : hostControl.paused ? "Resume control for everyone" : "Pause control for everyone"} disabled={hostControl.changing} onPress={() => hostControl.setPaused(!hostControl.paused)} /></> : null}
               {hostPlatform === "win32" ? <Text style={styles.description}>Windows support is experimental. UAC and secure desktops cannot be controlled.</Text> : null}
             </> : <ClipboardPanel styles={styles} enabled={controlling} onPaste={pasteOnHost} onRead={() => void pasteLocalClipboard()} onCopy={clipboard.supported ? clipboard.pull : undefined} />}
@@ -212,6 +252,15 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
       {keyboard ? <KeyboardTray enabled={controlling} niri={lastGood.current?.backend === "niri-native"} hostPlatform={hostPlatform} send={send} paste={pasteOnHost} onClose={() => setKeyboard(false)} /> : null}
     </View>
   );
+}
+
+function displayKindLabel(display: ScreenDisplay, hostPlatform: string): string {
+  if (display.managedVirtual) return "Virtual fallback";
+  if (display.kind === "virtual") return "Virtual display";
+  if (display.kind === undefined && hostPlatform !== "win32") return "Display";
+  if (display.kind === "physical") return "Physical";
+  if (display.kind === "fallback") return "Windows fallback";
+  return "Unknown";
 }
 
 function Action({ styles, label, disabled, onPress }: { styles: Styles; label: string; disabled?: boolean; onPress(): void }) {
@@ -278,6 +327,7 @@ type Styles = ReturnType<typeof createStyles>;
 function createStyles({ colors: c }: PluginTheme) {
   return StyleSheet.create({
     screen: { flex: 1, minHeight: 0, width: "100%", backgroundColor: c.surface0, overflow: "hidden" },
+    fallbackBanner: { flexDirection: "row", alignItems: "center", gap: 10, padding: 12, backgroundColor: c.surface1, borderBottomWidth: 1, borderColor: c.border },
     viewport: { flex: 1, minHeight: 0, position: "relative", backgroundColor: "#050608" },
     picture: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
     empty: { alignItems: "center", gap: 12, padding: 24 },

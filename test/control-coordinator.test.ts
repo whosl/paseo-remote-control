@@ -8,6 +8,27 @@ function setup(overrides = {}) {
   return { control: new ControlCoordinator(deps), deps };
 }
 describe("Shared control authority", () => {
+  it("holds the input queue and agent permission while a display transition is in flight", async () => {
+    const { control } = setup(); const started = deferred(), finish = deferred();
+    const transition = control.runDisplayTransition(async check => { started.resolve(); await finish.promise; check(); });
+    await started.promise;
+    const allowing = control.allowAgents(); await Promise.resolve();
+    expect(control.snapshot().humanPriority).toBe(true);
+    await expect(control.beforeAgent(action())).rejects.toThrow("priority");
+    finish.resolve(); await transition; await allowing;
+    expect(control.snapshot().humanPriority).toBe(false);
+  });
+  it("pause synchronously revokes an in-flight display transition before its next write", async () => {
+    const { control } = setup(); const started = deferred(), finish = deferred(); const write = vi.fn();
+    const transition = control.runDisplayTransition(async check => { started.resolve(); await finish.promise; check(); write(); });
+    const rejected = expect(transition).rejects.toThrow("cancelled"); await started.promise;
+    const pause = control.pause(true); finish.resolve(); await rejected; await pause; expect(write).not.toHaveBeenCalled();
+  });
+  it("release-only viewer cleanup never revokes or releases an active agent", async () => {
+    const { control } = setup(); await control.beforeAgent(action()); const release = vi.fn(async () => {});
+    await control.releaseHumanInput(release); expect(release).not.toHaveBeenCalled(); expect(control.snapshot().mode).toBe("agent");
+    await control.takeOver(); await control.pause(true); await control.releaseHumanInput(release); expect(release).toHaveBeenCalledOnce();
+  });
   it("shows a notice before allowing a mutation; observers do not claim control", async () => {
     const { control, deps } = setup();
     await control.beforeAgent(action("reader", false));

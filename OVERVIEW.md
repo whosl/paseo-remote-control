@@ -21,6 +21,13 @@ JPEGs. UAC/lock screens and elevated application input are not bypassed. Niri re
 GtkLayerShell, grim, WayVNC, wl-clipboard and an unlocked graphical session. Native
 phone haptics depend on device support and are not physically verified.
 
+Windows optionally supports physical-first headless fallback after an administrator
+separately provisions a signed virtual display driver. When physical displays
+disconnect, a virtual 1080p screen can keep the same desktop usable. Reconnection
+offers an explicit switch back rather than silently changing the viewed screen.
+Display changes reserve human control. Unknown monitor states do not trigger
+automatic changes, and disabling automation keeps the only working screen alive.
+
 Viewing uses the existing Paseo connection with optional encrypted direct H.264
 video in supported browsers. Direct connections have no configured TURN service;
 unreachable video falls back to JPEG. Agent screenshots and tool results reach the

@@ -115,6 +115,22 @@ export class ControlCoordinator {
       return run();
     });
   }
+  async runDisplayTransition<T>(run: (assertCurrent: () => void) => Promise<T>): Promise<T> {
+    await this.takeOver();
+    const generation = this.generation;
+    return this.runHuman(async () => {
+      const assertCurrent = () => {
+        if (this.stopped || this.state.paused || !this.state.humanPriority || generation !== this.generation) throw new Error("Display transition was cancelled by a control change");
+      };
+      assertCurrent();
+      return run(assertCurrent);
+    });
+  }
+  async releaseHumanInput(release: () => Promise<void>): Promise<void> {
+    await this.serial(async () => {
+      if (this.state.mode !== "agent") await release();
+    });
+  }
   async allowAgents(): Promise<RemoteControlState> {
     if (this.stopped || this.state.paused) throw new Error("Resume remote control before allowing agents");
     if (this.state.mode === "agent") throw new Error("Take over before changing agent access");

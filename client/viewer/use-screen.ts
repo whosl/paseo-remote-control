@@ -1,7 +1,7 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState, PixelRatio } from "react-native";
-import { frameRpc, inputRpc, type ScreenDisplay, type ScreenInputEvent } from "../../shared/screen/rpc";
+import { frameRpc, inputRpc, releaseInputRpc, type ScreenDisplay, type ScreenInputEvent } from "../../shared/screen/rpc";
 import { captureFps } from "../../shared/screen/capture-policy";
 
 export interface Quality {
@@ -47,7 +47,7 @@ function median(values: number[]): number {
  * Polls the host for JPEG frames while `active`. Unchanged frames come back without image data.
  * Frames are sized to the viewer (`viewWidth` in points), so small screens download far less.
  */
-export function useFrames(requested: boolean, displayId: number | undefined, quality: Quality, viewWidth: number, continuous = false): FrameState {
+export function useFrames(requested: boolean, displayId: number | undefined, quality: Quality, viewWidth: number, continuous = false, displayKey?: string): FrameState {
   // Stop capturing while the app is in the background (a hidden tab or a backgrounded phone app).
   const [appState, setAppState] = useState(AppState.currentState);
   useEffect(() => AppState.addEventListener("change", setAppState).remove, []);
@@ -119,7 +119,8 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
           if (result.jpeg) { since = result.hash; renderedHash = result.hash; }
           setState((previous) => ({
             uri: changed ? `data:image/jpeg;base64,${result.jpeg}` : previous.uri,
-            display: result.display ?? previous.display,
+            // Keep identity attached to the image, never to a metadata-only reply.
+            display: result.jpeg ? result.display ?? null : previous.display,
             asleep: result.asleep === true,
             error: null,
             fps: replies.length / 3,
@@ -145,7 +146,7 @@ export function useFrames(requested: boolean, displayId: number | undefined, qua
       cancelled = true;
       for (const timer of timers) clearTimeout(timer);
     };
-  }, [active, displayId, quality, maxWidth, continuous]);
+  }, [active, displayId, displayKey, quality, maxWidth, continuous]);
 
   return { ...state, wake };
 }
@@ -159,31 +160,67 @@ export function useInputQueue(
   onError: (message: string | null) => void,
   /** Called when a drag ends on a different display than the one being viewed. */
   onPointerDisplay: (display: number) => void,
+  /** Stable identity from the image actually being viewed. */
+  expectedDisplayKey?: string,
+  enabled = true,
 ) {
   const onPointerDisplayRef = useRef(onPointerDisplay);
   onPointerDisplayRef.current = onPointerDisplay;
   const input = useRpc(inputRpc);
+  const releaseInput = useRpc(releaseInputRpc);
+  const releaseRef = useRef(releaseInput);
+  releaseRef.current = releaseInput;
   const inputRef = useRef(input);
   inputRef.current = input;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
   const displayRef = useRef(displayId);
-  displayRef.current = displayId;
   const queue = useRef<ScreenInputEvent[]>([]);
   const sending = useRef(false);
+  const keyRef = useRef(expectedDisplayKey);
+  const enabledRef = useRef(enabled);
+  const generation = useRef(0);
+  const releasedGeneration = useRef(0);
+  const mounted = useRef(true);
+  // Invalidate synchronously so an in-flight reply cannot flush old events onto a new screen.
+  if (displayRef.current !== displayId || keyRef.current !== expectedDisplayKey || enabledRef.current !== enabled) {
+    queue.current = [];
+    generation.current++;
+  }
+  displayRef.current = displayId;
+  keyRef.current = expectedDisplayKey;
+  enabledRef.current = enabled;
 
   const flush = useCallback(async () => {
     if (sending.current) return;
     sending.current = true;
     try {
-      while (queue.current.length > 0) {
+      while (true) {
+        // Releases share the input serializer: wait for any old batch, then release only this
+        // viewer's held input before sending anything for the new generation (even while paused).
+        if (releasedGeneration.current < generation.current) {
+          const releasingGeneration = generation.current;
+          try {
+            await releaseRef.current({});
+            releasedGeneration.current = releasingGeneration;
+          } catch (error) {
+            // Keep the release pending and fail closed. A later flush retries it before input.
+            queue.current = [];
+            if (mounted.current) onErrorRef.current(error instanceof Error ? error.message : String(error));
+            return;
+          }
+          continue;
+        }
+        if (!mounted.current || !enabledRef.current || queue.current.length === 0) break;
         // The RPC accepts at most 200 events per call. A batch also ends after a text event, so each
         // text chunk gets its own request and timeout (a Linux host may type it slowly).
         const firstText = queue.current.findIndex((event) => event.type === "text");
         const events = queue.current.splice(0, firstText >= 0 ? Math.min(firstText + 1, 200) : 200);
+        const batchGeneration = generation.current;
         try {
           const requested = displayRef.current;
-          const result = await inputRef.current({ display: requested, events });
+          const result = await inputRef.current({ display: requested, expectedDisplayKey: keyRef.current, events });
+          if (batchGeneration !== generation.current) continue;
           // A batch that went through means any earlier error (such as "paused") no longer applies.
           onErrorRef.current(null);
           const endedDrag = events.some((event) => event.type === "up");
@@ -191,6 +228,7 @@ export function useInputQueue(
             onPointerDisplayRef.current(result.pointerDisplay);
           }
         } catch (error) {
+          if (batchGeneration !== generation.current) continue;
           onErrorRef.current(error instanceof Error ? error.message : String(error));
         }
       }
@@ -199,8 +237,23 @@ export function useInputQueue(
     }
   }, []);
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      queue.current = [];
+      generation.current++;
+      // If an input RPC is outstanding, its flush will perform this release after it settles.
+      void flush();
+    };
+  }, [flush]);
+
+  // Initial setup has no pending release. Subsequent target/control changes also flush when idle.
+  useEffect(() => { void flush(); }, [displayId, expectedDisplayKey, enabled, flush]);
+
   return useCallback(
     (event: ScreenInputEvent) => {
+      if (!mounted.current || !enabledRef.current) return;
       const last = queue.current[queue.current.length - 1];
       if (event.type === "move" && last?.type === "move") {
         queue.current[queue.current.length - 1] = event;

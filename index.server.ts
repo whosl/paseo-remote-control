@@ -6,11 +6,13 @@ import type { ComputerUseService } from "./server/computer-use-mcp";
 import { NiriPort } from "./server/computer-use-mcp/linux/niri-port";
 import { NiriIO } from "./server/host/niri-io";
 import { WindowsHost } from "./server/host/windows";
+import { createWindowsDisplayManager } from "./server/host/windows-display";
 import { WindowsPort } from "./server/computer-use-mcp/windows/port";
 import contributeScreen from "./server/screen/contribute";
 import { NiriHelper } from "./server/screen/niri";
 import { readControlPolicy, writeControlPolicy } from "./server/screen/preferences";
 import { allowAgentsRpc, ownershipRpc, takeoverRpc } from "./shared/control";
+import { displayFallbackRpc } from "./shared/screen/rpc";
 
 export default function contribute(server: PluginServerContext) {
   const io = process.platform === "linux" ? new NiriIO() : null;
@@ -46,8 +48,18 @@ export default function contribute(server: PluginServerContext) {
   });
   const ready = readControlPolicy().then((initial) => control.initialize(initial));
   void ready.catch(report);
-  const guardedServer: PluginServerContext = { ...server, handle: (contract, handler) => server.handle(contract, async (input, context) => { await ready; return handler(input, context); }) };
-  screen = contributeScreen(guardedServer, control, io ? new NiriHelper(report, io) : undefined, windows ?? undefined);
+  const displayReady = windows ? ready.then(async () => {
+    const manager = await createWindowsDisplayManager(windows.capture, control);
+    manager.start(); return manager;
+  }) : Promise.resolve(undefined);
+  void displayReady.catch(report);
+  const guardedServer: PluginServerContext = { ...server, handle: (contract, handler) => server.handle(contract, async (input, context) => { await ready; await displayReady; return handler(input, context); }) };
+  screen = contributeScreen(guardedServer, control, io ? new NiriHelper(report, io) : undefined, windows ?? undefined, displayReady);
+  server.handle(displayFallbackRpc, async ({ action }) => {
+    const manager = await displayReady;
+    if (!manager) throw new Error("Virtual display fallback is available only on Windows hosts.");
+    return manager.action(action);
+  });
   const cleanupAgent = contributeAgent(server, {
     ...(io ? { helperPort: new NiriPort(io) } : {}),
     ...(windows ? { helperPort: new WindowsPort(windows.input, windows.capture) } : {}),
@@ -62,6 +74,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(allowAgentsRpc, async () => { await ready; return control.allowAgents(); });
   return async () => {
     await ready.catch(() => {});
+    await (await displayReady.catch(() => undefined))?.stop();
     await control.stop();
     await Promise.all([cleanupAgent(), screen?.stop()]);
     await overlay?.stop();

@@ -57,3 +57,19 @@ bridge pipes require an independent per-launch nonce before any response is trus
 Nonce files grant access only to the desktop user's SID and SYSTEM, with inherited
 permissions removed. The secret is delivered to the launcher over stdin; task
 arguments contain only its path. Same-user processes remain trusted, not isolated.
+
+`server/host/windows-display.ts` coordinates optional physical-first headless fallback.
+Presence is queried from the limited interactive helper using QueryDisplayConfig,
+not inferred from Session 0, dimensions, or cached EDID. Stable monitor keys bind
+JPEG identity and viewer input across DISPLAYn reuse. Unknown classifications stop
+automation. Transitions are serialized and absence is debounced; first activation
+revokes agent control and configures only a verified VirtualDrivers target.
+
+Driver provisioning is an out-of-band administrator transaction with pinned hashes,
+normal Windows signature validation, an owned device manifest and an independent
+rollback task. Runtime PnP operations revalidate the exact instance and hardware ID,
+and reread provisioning before every change so rollback can revoke cached controllers.
+No physical GPU, global topology preset, Secure Boot or signing policy is changed.
+Physical reconnection does not tear down the live virtual desktop: explicit human
+return verifies physical capture and window migration first. Unmovable windows keep
+the virtual display enabled. Plugin teardown deliberately leaves it alive.

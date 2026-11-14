@@ -13,16 +13,19 @@ const file =
 const legacyFile = file.replace("paseo-remote-control", "paseo-screen");
 /** Where Windows hosts kept preferences before 0.5.0; read until the new file exists. */
 const legacyWindowsFile = path.join(homedir(), ".config", "paseo-screen", "preferences.json");
+const candidates = process.platform === "win32" ? [file, legacyFile, legacyWindowsFile] : [file, legacyFile];
 
 interface Preferences {
   display?: number;
   /** Remote input is refused while true; viewers can still watch. Kept across restarts. */
   controlPaused?: boolean;
   humanPriority?: boolean;
+  displayFallbackEnabled?: boolean;
+  displayKey?: string;
 }
 
 async function read(): Promise<Preferences> {
-  for (const candidate of process.platform === "win32" ? [file, legacyFile, legacyWindowsFile] : [file, legacyFile]) {
+  for (const candidate of candidates) {
     try {
       return JSON.parse(await readFile(candidate, "utf8")) as Preferences;
     } catch {
@@ -36,8 +39,16 @@ export async function readPreferredDisplay(): Promise<number | null> {
   return (await read()).display ?? null;
 }
 
-export function writePreferredDisplay(display: number): Promise<void> {
-  return update((preferences) => (preferences.display === display ? null : { ...preferences, display }));
+export function writePreferredDisplay(display: number, displayKey?: string): Promise<void> {
+  return update((preferences) => (preferences.display === display && preferences.displayKey === displayKey ? null : { ...preferences, display, displayKey }));
+}
+
+export async function readDisplayFallbackPolicy(): Promise<{ enabled: boolean; selectedKey: string | null }> {
+  const preferences = await read();
+  return { enabled: preferences.displayFallbackEnabled === true, selectedKey: typeof preferences.displayKey === "string" ? preferences.displayKey : null };
+}
+export function writeDisplayFallbackEnabled(enabled: boolean): Promise<void> {
+  return update((preferences) => ({ ...preferences, displayFallbackEnabled: enabled }));
 }
 
 export async function readControlPaused(): Promise<boolean> {
@@ -49,7 +60,7 @@ export function writeControlPaused(paused: boolean): Promise<void> {
 }
 
 export async function readControlPolicy(): Promise<{ paused: boolean; humanPriority: boolean }> {
-  for (const candidate of [file, legacyFile]) {
+  for (const candidate of candidates) {
     try {
       const preferences: Preferences = JSON.parse(await readFile(candidate, "utf8"));
       if (!preferences || typeof preferences !== "object" || (preferences.controlPaused !== undefined && typeof preferences.controlPaused !== "boolean") || (preferences.humanPriority !== undefined && typeof preferences.humanPriority !== "boolean")) throw new Error("Invalid control preferences");

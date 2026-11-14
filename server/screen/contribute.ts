@@ -3,11 +3,12 @@ import { createHeldTracker } from "./held";
 import { HelperProcess, linuxBackend, NO_SESSION } from "./helper";
 import type { NiriHelper } from "./niri";
 import type { ControlCoordinator } from "../control/coordinator";
+import type { WindowsDisplayManager } from "../host/windows-display";
 import { readPreferredDisplay, writePreferredDisplay } from "./preferences";
-import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, requestPermissionsRpc, statusRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
+import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, releaseInputRpc, requestPermissionsRpc, statusRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
 
 type ScreenHelper = Pick<HelperProcess, "request" | "stop">;
-export default function contribute(server: PluginServerContext, control: ControlCoordinator, niri?: NiriHelper, helpers?: { capture: ScreenHelper; input: ScreenHelper }) {
+export default function contribute(server: PluginServerContext, control: ControlCoordinator, niri?: NiriHelper, helpers?: { capture: ScreenHelper; input: ScreenHelper }, displayManager?: Promise<WindowsDisplayManager | undefined>) {
   const log = (message: string) => console.error(`[paseo-screen] ${message}`);
   // Separate processes so clicks and keys never queue behind a frame capture. On Wayland each
   // process would need its own portal session and approval, so one helper serves both and answers
@@ -24,6 +25,7 @@ export default function contribute(server: PluginServerContext, control: Control
       const status = await capture.request<
         Pick<ScreenStatus, "screenRecording" | "accessibility" | "locked" | "displays" | "backend" | "captureMode" | "webrtc" | "frameWait" | "awaitingApproval" | "permissionError"> & {
           activeDisplay?: number;
+          windowsTopology?: ScreenStatus["windowsTopology"];
         }
       >(command);
       let preferred = await readPreferredDisplay();
@@ -50,6 +52,7 @@ export default function contribute(server: PluginServerContext, control: Control
         ...(status.frameWait !== undefined ? { frameWait: status.frameWait } : {}),
         ...(status.awaitingApproval !== undefined ? { awaitingApproval: status.awaitingApproval } : {}),
         ...(status.permissionError ? { permissionError: status.permissionError } : {}),
+        ...(status.windowsTopology ? { windowsTopology: status.windowsTopology, displayFallback: (await displayManager)?.snapshot() } : {}),
       };
     } catch (error) {
       return { ...failed, supported: true, error: error instanceof Error ? error.message : String(error) };
@@ -69,7 +72,20 @@ export default function contribute(server: PluginServerContext, control: Control
   const held = createHeldTracker();
   let lastDisplay: number | undefined;
   let point = { x: 0.5, y: 0.5 };
+  async function releaseInput(): Promise<void> {
+    const events = held.releases(point);
+    try {
+      if (process.platform === "win32") {
+        if (events.length) await input.request("release");
+      } else if (events.length) await (await inputHelper()).request("input", { display: lastDisplay, events });
+    } finally { held.clear(); }
+  }
+  server.handle(releaseInputRpc, async () => {
+    await control.releaseHumanInput(releaseInput);
+    return {};
+  });
   server.handle(inputRpc, async (request) => {
+    if ((await displayManager)?.snapshot().state === "starting") throw new Error("Display is switching. Wait for a fresh frame before sending input.");
     return control.runHuman(async () => {
       lastDisplay = request.display;
       for (const event of request.events) if ("x" in event && typeof event.x === "number" && "y" in event && typeof event.y === "number") point = { x: event.x, y: event.y };
@@ -90,16 +106,14 @@ export default function contribute(server: PluginServerContext, control: Control
     return { paused: control.snapshot().paused };
   });
   server.handle(chooseDisplayRpc, async ({ display }) => {
-    await writePreferredDisplay(display);
+    const manager = await displayManager;
+    if (manager) await manager.choose(display);
+    else await writePreferredDisplay(display);
     return {};
   });
 
   return {
-    async releaseInput(): Promise<void> {
-      const events = held.releases(point);
-      try { if (events.length) await (await inputHelper()).request("input", { display: lastDisplay, events }); }
-      finally { held.clear(); }
-    },
+    releaseInput,
     async stop(): Promise<void> { await Promise.all([capture.stop(), input.stop()]); },
   };
 }
