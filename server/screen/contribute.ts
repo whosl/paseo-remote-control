@@ -6,7 +6,7 @@ import type { ControlCoordinator } from "../control/coordinator";
 import type { WindowsDisplayManager } from "../host/windows-display";
 import { readPreferredDisplay, writePreferredDisplay } from "./preferences";
 import { readVideoIceConfiguration } from "./video-config";
-import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, releaseInputRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
+import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, releaseInputRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoClientEventRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
 
 type ScreenHelper = Pick<HelperProcess, "request" | "stop">;
 export default function contribute(server: PluginServerContext, control: ControlCoordinator, niri?: NiriHelper, helpers?: { capture: ScreenHelper; input: ScreenHelper }, displayManager?: Promise<WindowsDisplayManager | undefined>) {
@@ -63,8 +63,27 @@ export default function contribute(server: PluginServerContext, control: Control
   server.handle(statusRpc, () => readStatus("status"));
   server.handle(requestPermissionsRpc, () => readStatus("request"));
   server.handle(frameRpc, (request) => capture.request("frame", request));
-  server.handle(videoConfigRpc, () => readVideoIceConfiguration());
-  server.handle(videoOfferRpc, (request) => capture.request("rtc-offer", request));
+  server.handle(videoClientEventRpc, (event) => {
+    log(`Video client ${event.phase} (${event.attempt.replace(/[^a-zA-Z0-9_-]/g, "")}${event.code ? `, ${event.code}` : ""})`);
+    return {};
+  });
+  server.handle(videoConfigRpc, async () => {
+    const configuration = await readVideoIceConfiguration();
+    log(`Video configuration requested (${configuration.iceServers.length} ICE entries)`);
+    return configuration;
+  });
+  server.handle(videoOfferRpc, async (request) => {
+    // Connection stages only: never log SDP, ICE credentials, or screen content.
+    log(`Video offer received (${request.maxWidth}px, ${request.fps}fps)`);
+    try {
+      const response = await capture.request<{ session: string; sdp: string }>("rtc-offer", request);
+      log("Video session negotiated");
+      return response;
+    } catch (error) {
+      log(`Video negotiation failed (${error instanceof Error ? error.name : "Error"})`);
+      throw error;
+    }
+  });
   server.handle(videoPingRpc, (request) => capture.request("rtc-ping", request));
   server.handle(videoStopRpc, (request) => capture.request("rtc-stop", request));
   /** Refuses remote input and clipboard access while control is paused on the host. */

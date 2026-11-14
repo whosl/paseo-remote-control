@@ -212,6 +212,13 @@ const videoIceConfigurationSchema = z.object({
 });
 export type VideoIceConfiguration = z.infer<typeof videoIceConfigurationSchema>;
 export const videoConfigRpc = defineRpc({ name: "screen.video-config", input: z.object({}), output: videoIceConfigurationSchema });
+const videoClientEventSchema = z.object({
+  attempt: z.string().max(96),
+  phase: z.enum(["starting", "offer", "answer", "answer-applied", "connecting", "connected", "ready", "failed", "closed"]),
+  code: z.enum(["timeout", "transport", "decoder", "unavailable", "other"]).optional(),
+});
+export type VideoClientEvent = z.infer<typeof videoClientEventSchema>;
+export const videoClientEventRpc = defineRpc({ name: "screen.video-client-event", input: videoClientEventSchema, output: z.object({}) });
 
 export const videoOfferRpc = defineRpc({
   name: "screen.video-offer",

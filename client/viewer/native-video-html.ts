@@ -24,7 +24,7 @@ video.onerror=()=>fail('Video decoding failed; using Paseo frames.');
  if(typeof RTCPeerConnection==='undefined')throw Error('WebRTC is unavailable in this Android WebView.');
  pc=new RTCPeerConnection(${JSON.stringify(configuration).replace(/</g, "\\u003c")});
  pc.ontrack=event=>{video.srcObject=new MediaStream([event.track]);video.play().catch(fail);};
- pc.onconnectionstatechange=()=>{clearTimeout(disconnected);if(pc.connectionState==='failed')fail('Direct connection unavailable; using Paseo frames.');else if(pc.connectionState==='disconnected')disconnected=setTimeout(()=>fail('Direct video disconnected; using Paseo frames.'),2500);};
+ pc.onconnectionstatechange=()=>{if(closed)return;emit({type:'connection',state:pc.connectionState});clearTimeout(disconnected);if(pc.connectionState==='failed')fail('Direct connection unavailable; using Paseo frames.');else if(pc.connectionState==='disconnected')disconnected=setTimeout(()=>fail('Direct video disconnected; using Paseo frames.'),2500);};
  const transceiver=pc.addTransceiver('video',{direction:'recvonly'});
  const codecs=RTCRtpReceiver.getCapabilities('video')?.codecs.filter(c=>c.mimeType.toLowerCase()==='video/h264')||[];
  if(!codecs.length)throw Error('H.264 decoding is unavailable in this Android WebView.');
@@ -37,12 +37,11 @@ video.onerror=()=>fail('Video decoding failed; using Paseo frames.');
   pc.addEventListener('icegatheringstatechange',gathered);gathered();
  });
  if(closed)return;emit({type:'offer',sdp:pc.localDescription.sdp});
- timeout=setTimeout(()=>fail('Direct video did not arrive; using Paseo frames.'),10000);
  poll=setInterval(()=>{try{
   const command=JSON.parse(window.ReactNativeWebView.injectedObjectJson());
   if(command.nonce!==nonce)return;if(command.stop){stop();return;}
   if(sending&&command.ack===sending){sending=null;const item=outgoing[0];if(++item.index>=item.total)outgoing.shift();pump();}
-  if(command.answer&&!applied){applied=true;pc.setRemoteDescription({type:'answer',sdp:command.answer}).catch(fail);}
+  if(command.answer&&!applied){applied=true;pc.setRemoteDescription({type:'answer',sdp:command.answer}).then(()=>{if(closed)return;emit({type:'answer-applied'});if(!ready)timeout=setTimeout(()=>fail('Direct video did not arrive; using Paseo frames.'),10000);}).catch(fail);}
  }catch{}},40);
  stats=setInterval(async()=>{try{
   const reports=await pc.getStats();if(closed||!ready)return;

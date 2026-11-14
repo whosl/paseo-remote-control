@@ -114,7 +114,7 @@
   "videoRate": "VIDEO RATE",
   "frame": "FRAME",
   "encryptedVideo": "WebRTC · H.264 · Encrypted",
-  "connectingVideo": "Connecting direct video…",
+  "connectingVideo": "Connecting WebRTC video…",
   "paseoFrames": "Paseo · JPEG frames",
   "paseoOnly": "Use Paseo transport only",
   "tryWebrtc": "Try direct WebRTC video",

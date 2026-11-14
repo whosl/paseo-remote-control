@@ -16,6 +16,31 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
 describe("Android video session", () => {
+  it("reports connection stages without sending SDP or credentials to diagnostics", async () => {
+    const report = vi.fn(async (_event: unknown) => ({}));
+    const signalling = { offer: vi.fn(async () => ({ session: "session-A", sdp: "private-answer" })), ping: vi.fn(async () => ({})), stop: vi.fn(async () => ({})), report };
+    const session = new NativeVideoSession(nonce, { display: 1, maxWidth: 800, fps: 24 }, signalling, () => {}, () => {});
+    session.receive(event("offer", 1, { sdp: "private-offer" })); await settle();
+    session.receive(event("answer-applied", 2));
+    session.receive(event("connection", 3, { state: "connecting" }));
+    session.receive(event("connection", 4, { state: "connected" }));
+    session.receive(event("ready", 5, { width: 800, height: 450 }));
+    session.stop("Direct video did not arrive; using Paseo frames.");
+    expect(report.mock.calls.map(([value]) => (value as { phase: string }).phase)).toEqual(["starting", "offer", "answer", "answer-applied", "connecting", "connected", "ready", "failed"]);
+    const payloads = JSON.stringify(report.mock.calls);
+    expect(payloads).not.toContain("private-offer"); expect(payloads).not.toContain("private-answer");
+    expect(report.mock.calls.at(-1)?.[0]).toMatchObject({ attempt: nonce, code: "timeout" });
+  });
+
+  it("keeps video working if optional diagnostics cannot be sent", async () => {
+    const states: NativeVideoState[] = [];
+    const signalling = { offer: vi.fn(async () => ({ session: "session-A", sdp: "answer" })), ping: vi.fn(async () => ({})), stop: vi.fn(async () => ({})), report: vi.fn(async () => { throw Error("diagnostics offline"); }) };
+    const session = new NativeVideoSession(nonce, { display: 1, maxWidth: 800, fps: 24 }, signalling, () => {}, state => states.push(state));
+    session.receive(event("offer", 1, { sdp: "offer" })); await settle();
+    session.receive(event("ready", 2, { width: 800, height: 450 }));
+    expect(states.at(-1)?.active).toBe(true); session.stop(); await settle();
+  });
+
   it("negotiates over Paseo and only becomes active after the first decoded frame", async () => {
     const h = setup();
     h.session.receive(event("offer", 1, { sdp: "offer" })); await settle();
@@ -118,8 +143,11 @@ describe("native WebView bridge", () => {
     expect(h.commands).toEqual([]); expect(h.signalling.offer).not.toHaveBeenCalled(); h.session.stop();
   });
 
-  it("negotiates the production document across native title events and injected properties", async () => {
-    const h = setup();
+  it.each([0, 12_000])("negotiates the production document across the native bridge with a %ims signalling delay", async (signallingDelay) => {
+    const h = setup(vi.fn(async () => {
+      if (signallingDelay) await new Promise(resolve => setTimeout(resolve, signallingDelay));
+      return { session: "session-A", sdp: "answer" };
+    }));
     let command: NativeVideoCommand = { nonce };
     const video = { readyState: 2, videoWidth: 1280, videoHeight: 720, srcObject: null, onloadeddata: () => {}, onerror: () => {}, play: async () => {}, pause: vi.fn() };
     const canvas = { width: 0, height: 0, style: { display: "none" }, getContext: () => ({ drawImage: vi.fn() }) };
@@ -151,7 +179,7 @@ describe("native WebView bridge", () => {
       RTCPeerConnection: Peer, RTCRtpReceiver: { getCapabilities: () => ({ codecs: [{ mimeType: "video/H264" }] }) },
       MediaStream: class {}, addEventListener() {}, performance, setTimeout, clearTimeout, setInterval, clearInterval, Error,
     });
-    await vi.advanceTimersByTimeAsync(4500);
+    await vi.advanceTimersByTimeAsync(signallingDelay + 4500);
     expect(h.signalling.offer).toHaveBeenCalledTimes(1);
     expect(h.states.at(-1)?.active).toBe(true);
     expect(h.states.at(-1)?.relay).toBe(true);

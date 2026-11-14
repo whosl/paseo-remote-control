@@ -114,7 +114,7 @@
   "videoRate": "视频码率",
   "frame": "帧大小",
   "encryptedVideo": "WebRTC · H.264 · 已加密",
-  "connectingVideo": "正在连接直连视频…",
+  "connectingVideo": "正在建立 WebRTC 视频连接…",
   "paseoFrames": "Paseo · JPEG 图像帧",
   "paseoOnly": "仅使用 Paseo 传输",
   "tryWebrtc": "尝试 WebRTC 直连视频",

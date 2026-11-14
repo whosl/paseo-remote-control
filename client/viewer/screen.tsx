@@ -4,7 +4,7 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PixelRatio, Platform, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent } from "react-native";
-import { chooseDisplayRpc, displayFallbackRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenDisplay, type ScreenInputEvent, type ScreenModifier, type ScreenStatus } from "../../shared/screen/rpc";
+import { chooseDisplayRpc, displayFallbackRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoClientEventRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenDisplay, type ScreenInputEvent, type ScreenModifier, type ScreenStatus } from "../../shared/screen/rpc";
 import { readLocalClipboard, useHostClipboard } from "./clipboard";
 import { useControlPause } from "./control";
 import { chrome, Control, Key } from "./controls";
@@ -50,9 +50,11 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   });
   const offerVideo = useRpc(videoOfferRpc);
   const configureVideo = useRpc(videoConfigRpc);
+  const reportVideo = useRpc(videoClientEventRpc);
   const pingVideo = useRpc(videoPingRpc);
   const stopVideo = useRpc(videoStopRpc);
   const [preferDirect, setPreferDirect] = useState(true);
+  const [videoAttempt, setVideoAttempt] = useState(0);
   const [videoNode, setVideoNode] = useState<unknown>(null);
   const [paused, setPaused] = useState(false);
   const [control, setControl] = useState(true);
@@ -99,8 +101,8 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const directEnabled = canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true;
   const videoWidth = Math.max(320, Math.min(quality.maxWidth, wanted));
   const videoFps = [30, 24, 15][qualityIndex]!;
-  const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo });
-  const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused);
+  const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo }, videoAttempt);
+  const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), report: reportVideo, offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused, videoAttempt);
   const direct = isWeb ? browserDirect : nativeDirect;
   const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true, display?.stableKey, lastGood.current?.platform);
   const frameAspect = frames.display ? frames.display.width / frames.display.height : null;
@@ -239,10 +241,13 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
                 <Text accessibilityLabel={t("frameRateLabel", { value: fps })} style={styles.connectionStat}>{`${fps} fps`}</Text>
                 <Text accessibilityLabel={t("bandwidthLabel", { value: bandwidth })} style={styles.connectionStat}>{bandwidth}</Text>
                 {direct.supported && !managedSelection && lastGood.current?.webrtc
-                  ? <Pressable accessibilityRole="button" accessibilityLabel={preferDirect ? t("paseoOnly") : t("tryWebrtc")} accessibilityHint={t("connectionModeLabel", { mode: connectionMode })} onPress={() => setPreferDirect(!preferDirect)}><Text style={[styles.connectionStat, { textDecorationLine: "underline" }]}>{connectionMode}</Text></Pressable>
+                  ? <Pressable accessibilityRole="button" accessibilityLabel={direct.active ? t("paseoOnly") : t("tryWebrtc")} accessibilityHint={t("connectionModeLabel", { mode: connectionMode })} onPress={() => {
+                      if (direct.active) setPreferDirect(false);
+                      else { setPreferDirect(true); setVideoAttempt(value => value + 1); }
+                    }}><Text style={[styles.connectionStat, { textDecorationLine: "underline" }]}>{connectionMode}</Text></Pressable>
                   : <Text accessibilityLabel={t("connectionModeLabel", { mode: connectionMode })} style={styles.connectionStat}>{connectionMode}</Text>}
               </View>
-              {preferDirect && direct.reason ? <Text style={styles.description}>{localizeRemoteText(direct.reason, t)}</Text> : null}
+              {preferDirect && (direct.connecting || direct.reason) ? <Text style={styles.description}>{direct.connecting ? t("connectingVideo") : localizeRemoteText(direct.reason, t)}</Text> : null}
               <View style={styles.rule} />
               <Text style={styles.sectionLabel}>{t("inputSection")}</Text>
               <View style={styles.qualityRow}>{(["touchscreen", "trackpad"] as InputMode[]).map((mode) => <Pressable key={mode} accessibilityRole="button" accessibilityLabel={t("selectInputMode", { mode: mode === "trackpad" ? t("trackpad") : t("touchscreen") })} accessibilityState={{ selected: inputMode === mode }} onPress={() => setInputMode(mode)} style={[styles.quality, inputMode === mode && styles.selectedRow]}><Icon name={mode === "trackpad" ? "Touchpad" : "Hand"} size={18} color={theme.colors.foreground} /><Text style={styles.rowTitle}>{mode === "trackpad" ? t("trackpad") : t("touchscreen")}</Text></Pressable>)}</View>

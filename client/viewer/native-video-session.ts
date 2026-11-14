@@ -1,4 +1,5 @@
 import type { DirectVideoSignalling } from "./web";
+import type { VideoClientEvent } from "../../shared/screen/rpc";
 
 export const initialNativeVideo = { active: false, connecting: false, fps: 0, kbps: 0, relay: null as boolean | null, rttMs: null as number | null, reason: null as string | null, still: null as string | null };
 export type NativeVideoState = typeof initialNativeVideo;
@@ -41,6 +42,7 @@ export class NativeVideoSession {
     private readonly update: (state: NativeVideoState) => void,
   ) {
     this.lastCommand = { nonce };
+    this.event("starting");
     update({ ...initialNativeVideo, connecting: true });
     this.timeout = setTimeout(() => this.stop("Direct video did not arrive; using Paseo frames."), 25_000);
   }
@@ -48,6 +50,11 @@ export class NativeVideoSession {
   private send(command: Partial<NativeVideoCommand>): void {
     this.lastCommand = { ...this.lastCommand, ...command };
     this.command(this.lastCommand);
+  }
+
+  private event(phase: VideoClientEvent["phase"], code?: VideoClientEvent["code"]): void {
+    try { void this.signalling.report?.({ attempt: this.nonce, phase, ...(code ? { code } : {}) }).catch(() => {}); }
+    catch { /* Diagnostics never interrupt video. */ }
   }
 
   receive(url: string, title?: string): void {
@@ -77,20 +84,25 @@ export class NativeVideoSession {
       void this.offer(event.sdp);
     } else if (event.type === "ready" && this.session && Number(event.width) > 0 && Number(event.height) > 0) {
       this.ready = true;
+      this.event("ready");
       clearTimeout(this.timeout);
       this.update({ ...initialNativeVideo, active: true });
     } else if (event.type === "stats" && this.ready) {
       const fps = Number(event.fps), kbps = Number(event.kbps);
       if (Number.isFinite(fps) && fps >= 0 && Number.isFinite(kbps) && kbps >= 0)
         this.update({ ...initialNativeVideo, active: true, fps, kbps, relay: typeof event.relay === "boolean" ? event.relay : null, rttMs: typeof event.rttMs === "number" && Number.isFinite(event.rttMs) ? event.rttMs : null });
-    } else if (event.type === "error" && typeof event.message === "string") this.stop(event.message.slice(0, 500));
+    } else if (event.type === "answer-applied") this.event("answer-applied");
+    else if (event.type === "connection" && (event.state === "connecting" || event.state === "connected")) this.event(event.state);
+    else if (event.type === "error" && typeof event.message === "string") this.stop(event.message.slice(0, 500));
   }
 
   private async offer(sdp: string): Promise<void> {
     try {
+      this.event("offer");
       const answer = await this.signalling.offer({ ...this.request, sdp });
       if (this.closed) { void this.signalling.stop({ session: answer.session }).catch(() => {}); return; }
       this.session = answer.session;
+      this.event("answer");
       this.send({ answer: answer.sdp });
       this.heartbeat = setInterval(() => {
         void this.signalling.ping({ session: answer.session }).catch(() => this.stop("Video session ended; using Paseo frames."));
@@ -101,6 +113,7 @@ export class NativeVideoSession {
   stop(reason: string | null = null): void {
     if (this.closed) return;
     this.closed = true;
+    this.event(reason ? "failed" : "closed", reason ? /did not arrive|timed out/i.test(reason) ? "timeout" : /disconnect|connection|session ended/i.test(reason) ? "transport" : /decod/i.test(reason) ? "decoder" : /unavailable|not available/i.test(reason) ? "unavailable" : "other" : undefined);
     clearTimeout(this.timeout); clearInterval(this.heartbeat);
     this.send({ stop: true });
     if (this.session) void this.signalling.stop({ session: this.session }).catch(() => {});

@@ -1,8 +1,10 @@
 import { Component, useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import * as ReactNative from "react-native";
+import * as HostUi from "@getpaseo/plugin/client/ui";
 import type { ViewProps } from "react-native";
 import type { DirectVideoSignalling } from "./web";
 import { nativeVideoDocument } from "./native-video-html";
+import { androidVideoViewName } from "./native-video-view";
 import { initialNativeVideo, nativeVideoCommandJson, NativeVideoSession, type NativeVideoCommand } from "./native-video-session";
 
 const { AppState, Platform, UIManager, View } = ReactNative;
@@ -29,19 +31,10 @@ interface NativeProps extends ViewProps {
   onRenderProcessGone(): void;
 }
 
-let cachedView: ComponentType<NativeProps> | null | undefined;
 function androidVideoView(): ComponentType<NativeProps> | null {
-  if (Platform.OS !== "android") return null;
-  if (cachedView !== undefined) return cachedView;
-  try {
-    if (!UIManager.getViewManagerConfig("RNCWebView")) return cachedView = null;
-    // Reuse Paseo's registration. Registering the same name here could break a
-    // lazily loaded terminal/document view later. If the app has not registered
-    // its JS view config yet, VideoBoundary falls back without changing it.
-    // Likewise, never replace the app-wide WebView messaging module.
-    cachedView = "RNCWebView" as unknown as ComponentType<NativeProps>;
-  } catch { cachedView = null; }
-  return cachedView;
+  // Reuse Paseo's registration; do not register a duplicate view or replace the
+  // app-wide WebView messaging module. Missing lazy capabilities are not cached.
+  return androidVideoViewName(Platform.OS, UIManager, () => HostUi.DocumentFrame) as ComponentType<NativeProps> | null;
 }
 
 class VideoBoundary extends Component<{ children: ReactNode; onError(): void }, { failed: boolean }> {
@@ -61,11 +54,11 @@ type Playback = {
 };
 
 /** Reuses Paseo's compiled WebView through the public React Native native-view API. */
-export function useNativeVideo(enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling, freeze = false) {
+export function useNativeVideo(enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling, freeze = false, retry = 0) {
   const NativeView = androidVideoView();
   const [foreground, setForeground] = useState(AppState.currentState !== "background");
   useEffect(() => AppState.addEventListener("change", value => setForeground(value !== "background")).remove, []);
-  const profile = `${display}:${maxWidth}:${fps}`;
+  const profile = `${display}:${maxWidth}:${fps}:${retry}`;
   const [reported, setReported] = useState({ profile, state: initialNativeVideo });
   const state = reported.profile === profile ? reported.state : initialNativeVideo;
   const [playback, setPlayback] = useState<Playback | null>(null);
@@ -107,5 +100,6 @@ export function useNativeVideo(enabled: boolean, display: number | undefined, ma
       </View>
     </VideoBoundary>
   ) : null;
-  return { ...state, supported: NativeView !== null, video };
+  const reason = state.reason ?? (Platform.OS === "android" && enabled && NativeView === null ? "Native video is unavailable; using Paseo frames." : null);
+  return { ...state, reason, supported: NativeView !== null, video };
 }

@@ -26,7 +26,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm run lint
-      - run: npx vitest run test/windows.test.ts test/windows-ipc.test.ts test/windows-display.test.ts test/control-coordinator.test.ts test/preferences-migration.test.ts test/viewer-input-queue.test.ts test/viewer-frame-loop.test.ts test/translations.test.ts test/frame-metrics.test.ts test/viewer-sessions.test.ts test/native-video.test.ts test/video-config.test.ts
+      - run: npx vitest run test/windows.test.ts test/windows-ipc.test.ts test/windows-display.test.ts test/control-coordinator.test.ts test/preferences-migration.test.ts test/viewer-input-queue.test.ts test/viewer-frame-loop.test.ts test/translations.test.ts test/frame-metrics.test.ts test/viewer-sessions.test.ts test/native-video.test.ts test/native-video-view.test.ts test/video-config.test.ts
       - run: npm run test:viewer
       - name: Parse provisioning scripts with Windows PowerShell 5.1
         shell: powershell

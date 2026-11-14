@@ -47,7 +47,7 @@ export function useFullscreen(node: unknown) {
   return { active, supported, toggle };
 }
 
-import type { VideoIceConfiguration } from "../../shared/screen/rpc";
+import type { VideoClientEvent, VideoIceConfiguration } from "../../shared/screen/rpc";
 
 interface Codec { mimeType: string }
 interface Description { type: "offer" | "answer"; sdp: string }
@@ -90,6 +90,7 @@ declare const MediaStream: new (tracks: unknown[]) => unknown;
 
 export interface DirectVideoSignalling {
   config?(): Promise<VideoIceConfiguration>;
+  report?(event: VideoClientEvent): Promise<unknown>;
   offer(input: { display?: number; maxWidth: number; fps: number; sdp: string }): Promise<{ session: string; sdp: string }>;
   ping(input: { session: string }): Promise<unknown>;
   stop(input: { session: string }): Promise<unknown>;
@@ -97,7 +98,7 @@ export interface DirectVideoSignalling {
 const initialVideo = { active: false, connecting: false, fps: 0, rttMs: null as number | null, kbps: 0, relay: null as boolean | null, reason: null as string | null, still: null as string | null };
 
 /** Browser media; Android uses native-video and both retain the portable JPEG fallback. */
-export function useDirectVideo(node: unknown, enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling) {
+export function useDirectVideo(node: unknown, enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling, retry = 0) {
   const [state, setState] = useState(initialVideo);
   const [foreground, setForeground] = useState(AppState.currentState !== "background");
   useEffect(() => AppState.addEventListener("change", (value) => setForeground(value !== "background")).remove, []);
@@ -195,7 +196,7 @@ export function useDirectVideo(node: unknown, enabled: boolean, display: number 
     };
     void start().catch((error) => end(`${error instanceof Error ? error.message : "Direct video unavailable"}; using Paseo frames.`));
     return () => end(null);
-  }, [node, enabled, display, maxWidth, fps, supported, foreground]);
+  }, [node, enabled, display, maxWidth, fps, supported, foreground, retry]);
   return { ...state, supported };
 }
 
