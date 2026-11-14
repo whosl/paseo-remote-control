@@ -202,7 +202,13 @@ py -3 -m venv "$env:LOCALAPPDATA\paseo-remote-control\rtc-venv"
 ```
 
 Create the environment in the desktop profile used by the daemon. Tested with
-Python 3.14 on the Windows service host. The interactive helper streams raw BGRA
+Python 3.14 on the Windows service host. Windows automatically prefers NVIDIA
+NVENC H.264 when the installed driver and PyAV build support it. The encoder uses
+ultra-low-latency CBR, no B-frames or lookahead, and dynamic bitrate updates without
+reopening the GPU session. Missing/busy hardware or device loss falls back to x264
+with a fresh keyframe. Plugin logs identify the active encoder. Capture still uses
+GDI, so hardware encoding alone does not guarantee 30 FPS.
+The interactive helper streams raw BGRA
 pixels over a short-lived, nonce-authenticated loopback socket to the H.264 worker;
 no JPEG encode/decode round trip or public capture listener is involved. Each feed
 is bound to a stable display identity and geometry, checked around every capture.

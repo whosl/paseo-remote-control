@@ -22,6 +22,14 @@ logging.basicConfig(stream=sys.stderr, level=logging.ERROR)
 sessions = {}
 closing = False
 windows_timer = False
+output_lock = threading.Lock()
+
+
+def emit(message):
+    # Encoder notifications originate on aiortc's executor thread. Keep them
+    # from interleaving with an SDP response on the private stdio transport.
+    with output_lock:
+        print(json.dumps(message, separators=(",", ":")), flush=True)
 
 
 def video_timer(enable):
@@ -39,8 +47,11 @@ def video_timer(enable):
 class ScreenH264Encoder(H264Encoder):
     """Screen-oriented encoder for the pinned aiortc 1.16 factory, in this worker only."""
 
-    def __init__(self):
+    def __init__(self, prefer_hardware=None):
         super().__init__()
+        self._hardware = sys.platform == "win32" if prefer_hardware is None else prefer_hardware
+        self._hardware_failed = False
+        self._reported_backend = None
         self._bitrate = 1_000_000
         self._maximum = 12_000_000
         self._estimate = None
@@ -96,26 +107,57 @@ class ScreenH264Encoder(H264Encoder):
             self._probe_target = min(self._desired, self._bitrate * 5 // 4)
             self._bitrate = self._probe_target
             self._probe_after = time.monotonic() + 1
+        if self.codec and self.codec.name == "h264_nvenc":
+            # FFmpeg's NVENC wrapper reconfigures supported dynamic rate control
+            # from AVCodecContext.bit_rate on the next frame. Avoid reopening a
+            # GPU session for every REMB update (which stalls for ~200 ms).
+            self.codec.bit_rate = self.target_bitrate
         if self.codec and (self.codec.width != frame.width or self.codec.height != frame.height
                            or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate > 0.1):
             self.buffer_data = b""
             self.buffer_pts = None
             self.codec = None
         if self.codec is None:
-            self.codec = av.CodecContext.create("libx264", "w")
-            self.codec.width, self.codec.height = size
-            self.codec.bit_rate = self.target_bitrate
-            self.codec.pix_fmt = "yuv420p"
-            self.codec.framerate = fractions.Fraction(30, 1)
-            self.codec.time_base = fractions.Fraction(1, 30)
-            self.codec.thread_count = min(8, os.cpu_count() or 1)
-            self.codec.gop_size = 60
-            self.codec.max_b_frames = 0
-            macroblocks = ((frame.width + 15) // 16) * ((frame.height + 15) // 16)
-            level = "3.1" if macroblocks <= 3600 else "4.0" if macroblocks <= 8192 else "5.0" if macroblocks <= 22080 else "5.2"
-            self.codec.options = {"preset": "veryfast", "tune": "zerolatency", "level": level}
-            self.codec.profile = "Baseline"
-        return super()._encode_frame(frame, force_keyframe)
+            try:
+                self.codec = self._create_codec("h264_nvenc" if self._hardware and not self._hardware_failed else "libx264", size)
+            except Exception:
+                if not self._hardware or self._hardware_failed:
+                    raise
+                self._hardware_failed = True
+                self.codec = self._create_codec("libx264", size)
+        try:
+            yield from super()._encode_frame(frame, force_keyframe)
+        except Exception:
+            if self.codec is None or self.codec.name != "h264_nvenc":
+                raise
+            # Driver/session exhaustion and device loss must not end the viewer.
+            # Start a fresh software stream with an IDR on the same input frame.
+            self._hardware_failed = True
+            self.codec = None
+            self.buffer_data, self.buffer_pts = b"", None
+            self.codec = self._create_codec("libx264", size)
+            yield from super()._encode_frame(frame, True)
+        if self._reported_backend != self.codec.name:
+            self._reported_backend = self.codec.name
+            emit({"event": "encoder", "backend": self.codec.name, "fallback": self._hardware_failed})
+
+    def _create_codec(self, name, size):
+        codec = av.CodecContext.create(name, "w")
+        codec.width, codec.height = size
+        codec.bit_rate = self.target_bitrate
+        codec.pix_fmt = "yuv420p"
+        codec.framerate = fractions.Fraction(30, 1)
+        codec.time_base = fractions.Fraction(1, 30)
+        codec.thread_count = min(8, os.cpu_count() or 1)
+        codec.gop_size = 60
+        codec.max_b_frames = 0
+        macroblocks = ((size[0] + 15) // 16) * ((size[1] + 15) // 16)
+        level = "3.1" if macroblocks <= 3600 else "4.0" if macroblocks <= 8192 else "5.0" if macroblocks <= 22080 else "5.2"
+        codec.options = ({"preset": "p4", "tune": "ull", "rc": "cbr", "zerolatency": "1", "delay": "0", "rc-lookahead": "0", "forced-idr": "1", "profile": "baseline", "level": level}
+                         if name == "h264_nvenc" else {"preset": "veryfast", "tune": "zerolatency", "level": level})
+        codec.profile = "Baseline"
+        codec.open()  # Missing drivers and unsupported devices fail before media is sent.
+        return codec
 
 
 # RTCRtpSender imports get_encoder, whose globals resolve this class on demand.
@@ -383,7 +425,7 @@ async def handle(message):
         response = {"id": message["id"], "result": result}
     except Exception as error:
         response = {"id": message.get("id"), "error": str(error)}
-    print(json.dumps(response, separators=(",", ":")), flush=True)
+    emit(response)
 
 
 async def reap():

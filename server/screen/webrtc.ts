@@ -71,6 +71,10 @@ export class WebRtcWorker {
       lines.on("line", (line) => {
         try {
           const message = JSON.parse(line);
+          if (message.event === "encoder" && (message.backend === "h264_nvenc" || message.backend === "libx264")) {
+            this.log(`Video encoder: ${message.backend}${message.fallback === true ? " (hardware fallback)" : ""}`);
+            return;
+          }
           const pending = this.pending.get(message.id);
           if (!pending) return;
           clearTimeout(pending.timer); this.pending.delete(message.id);

@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import pathlib
 import unittest
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -127,6 +128,77 @@ class ScreenEncoderTests(unittest.TestCase):
         self.assertLessEqual(len(emitted), 61)
         slots = [int(float(image.pts * image.time_base) * 30 + 1e-6) for image in emitted]
         self.assertEqual(len(set(slots)), len(slots))
+
+
+class HardwareFallbackTests(unittest.TestCase):
+    def assert_decodable(self, payloads, width, height):
+        decoder = av.CodecContext.create("h264", "r")
+        decoded = decoder.decode(av.Packet(b"".join(h264_depayload(payload) for payload in payloads)))
+        self.assertEqual((decoded[0].width, decoded[0].height), (width, height))
+
+    def test_missing_driver_falls_back_once_and_retains_network_feedback(self):
+        encoder = worker.ScreenH264Encoder(prefer_hardware=True)
+        create = encoder._create_codec
+        attempts = []
+        def unavailable(name, size):
+            attempts.append(name)
+            if name == "h264_nvenc":
+                raise RuntimeError("No NVENC device")
+            return create(name, size)
+        with patch.object(encoder, "_create_codec", side_effect=unavailable), patch.object(worker, "emit") as report:
+            payloads, _ = encoder.encode(frame(640, 480))
+            self.assert_decodable(payloads, 640, 480)
+            self.assertEqual(encoder.codec.name, "libx264")
+            encoder.target_bitrate = 200_000
+            encoder.encode(frame(640, 480, 1))
+            encoder.encode(frame(1280, 720, 2))
+            self.assertEqual(encoder.codec.bit_rate, 200_000)
+            self.assertEqual(attempts.count("h264_nvenc"), 1)
+            report.assert_called_once_with({"event": "encoder", "backend": "libx264", "fallback": True})
+
+    def test_device_loss_reencodes_the_same_frame_as_a_software_idr(self):
+        encoder = worker.ScreenH264Encoder(prefer_hardware=True)
+        create = encoder._create_codec
+        broken = SimpleNamespace(name="h264_nvenc", width=640, height=480, bit_rate=1_000_000)
+        def lost(_frame):
+            raise RuntimeError("NVENC device lost")
+        broken.encode = lost
+        with patch.object(encoder, "_create_codec", side_effect=lambda name, size: broken if name == "h264_nvenc" else create(name, size)), patch.object(worker, "emit"):
+            payloads, timestamp = encoder.encode(frame(640, 480, 9))
+            self.assert_decodable(payloads, 640, 480)
+            self.assertEqual(timestamp, 27000)
+            self.assertTrue(encoder._hardware_failed)
+            self.assertEqual(encoder.codec.name, "libx264")
+
+    def test_software_selection_does_not_probe_the_gpu(self):
+        encoder = worker.ScreenH264Encoder(prefer_hardware=False)
+        with patch.object(encoder, "_create_codec", wraps=encoder._create_codec) as create, patch.object(worker, "emit"):
+            encoder.encode(frame(640, 480))
+            self.assertEqual([call.args[0] for call in create.call_args_list], ["libx264"])
+
+    @unittest.skipUnless(os.environ.get("PASEO_RC_RUN_NVENC") == "1", "requires an explicitly selected NVENC host")
+    def test_real_gpu_bgra_resize_dynamic_bitrate_and_independent_idr_decode(self):
+        encoder = worker.ScreenH264Encoder(prefer_hardware=True)
+        with patch.object(worker, "emit"):
+            for width, height in [(1920, 1080), (1280, 720), (2560, 1440)]:
+                image = av.VideoFrame(width, height, "bgra")
+                image.planes[0].update(bytes([30, 90, 170, 255]) * (image.planes[0].buffer_size // 4))
+                image.pts, image.time_base = 0, fractions.Fraction(1, 30)
+                payloads, _ = encoder.encode(image, True)
+                self.assertEqual(encoder.codec.name, "h264_nvenc")
+                self.assertFalse(encoder._hardware_failed)
+                self.assert_decodable(payloads, width, height)
+                context = encoder.codec
+                encoder.target_bitrate = 300_000
+                image.pts = 1
+                encoder.encode(image)
+                self.assertIs(encoder.codec, context)
+                encoder.target_bitrate = 3_000_000
+                image.pts = 2
+                payloads, _ = encoder.encode(image, True)
+                self.assertIs(encoder.codec, context)
+                self.assertEqual(encoder.codec.bit_rate, 3_000_000)
+                self.assert_decodable(payloads, width, height)
 
 
 class PacingTests(unittest.IsolatedAsyncioTestCase):

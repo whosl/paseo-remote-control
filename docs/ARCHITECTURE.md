@@ -30,7 +30,13 @@ for low latency, and chooses bounded bitrate budgets from frame size. A paced
 transport adapter prevents frame-sized packet bursts. Fresh RTCP receiver reports
 reduce a separate cap on loss even when REMB is optimistic; clean reports recover
 that cap slowly. No installed
-library files are patched. A quantized capture filter avoids undershooting the
+library files are patched. On Windows the worker prefers `h264_nvenc` with P4 /
+ultra-low-latency CBR, no reorder delay, B-frames or lookahead. REMB updates change
+the live context bitrate through FFmpeg NVENC reconfiguration rather than reopening
+a GPU session. Initialization failure or device loss retries the same frame as an
+x264 IDR and keeps that viewer on software encoding. Worker stdout notifications
+report only the selected encoder and fallback state, serialized with RPC replies
+under a shared lock. A quantized capture filter avoids undershooting the
 requested cadence when compositor timestamps jitter. Old screenshot helpers
 remain for other desktops. Windows uses the existing limited interactive C# helper
 for raw BGRA capture. It checks stable monitor identity, geometry and unlocked

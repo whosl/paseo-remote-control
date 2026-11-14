@@ -18,7 +18,7 @@ as a combined system. Windows uses focused-window visual tools, requires an unlo
 logged-in desktop, .NET Framework, PowerShell and Task Scheduler, and can bridge a
 Session 0 daemon using temporary limited-token tasks. Agent captures render only
 the target window; some GPU apps may return blank. Human viewing uses full-desktop
-JPEGs. UAC/lock screens and elevated application input are not bypassed. Niri requires GTK /
+JPEGs or optional H.264 video. UAC/lock screens and elevated application input are not bypassed. Niri requires GTK /
 GtkLayerShell, grim, WayVNC, wl-clipboard and an unlocked graphical session. Native
 phone haptics depend on device support and are not physically verified.
 
@@ -33,7 +33,9 @@ Viewing uses the existing Paseo connection. Linux/Niri and Windows hosts with th
 optional Python media environment can also send encrypted
 H.264 video to supported browsers and Android clients that include Paseo's WebView,
 with quality presets up to 2560 pixels wide and 30 frames per second. Video bitrate
-adapts to the receiving connection; static desktops use less traffic.
+adapts to the receiving connection; static desktops use less traffic. Windows
+uses NVIDIA hardware encoding when available and falls back to software encoding
+if the driver or GPU cannot serve the stream.
 Android reuses that installed component; unavailable or failed video falls back
 to JPEG. iOS uses JPEG. A host administrator can configure STUN and authenticated
 TURN for outside-network viewing. Direct paths are preferred, and the picture
