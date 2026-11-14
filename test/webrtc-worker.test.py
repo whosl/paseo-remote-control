@@ -168,5 +168,48 @@ class PacingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(encoder.target_bitrate, 750_000)
 
 
+class WindowsRawFeedTests(unittest.IsolatedAsyncioTestCase):
+    async def test_private_bgra_feed_rejects_wrong_nonce_and_decodes_with_row_padding(self):
+        source = worker.WindowsVideo(34, 18)
+        source.server = await asyncio.start_server(source.accept, "127.0.0.1", 0, limit=128)
+        port = source.server.sockets[0].getsockname()[1]
+        try:
+            reader, bad = await asyncio.open_connection("127.0.0.1", port)
+            bad.write(b"wrong-token\n"); await bad.drain()
+            self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+            self.assertFalse(source.claimed)
+            bad.close(); await bad.wait_closed()
+            _, good = await asyncio.open_connection("127.0.0.1", port)
+            good.write((source.token + "\n").encode())
+            good.write(worker.struct.pack("<q", 9000) + bytes([40, 80, 120, 255]) * (34 * 18))
+            await good.drain()
+            image = await source.recv()
+            self.assertEqual((image.width, image.height, image.pts, image.time_base), (34, 18, 9000, fractions.Fraction(1, 90000)))
+            self.assertEqual(bytes(image.planes[0])[:8], bytes([40, 80, 120, 255]) * 2)
+            encoder = worker.ScreenH264Encoder()
+            payloads, _ = encoder.encode(image)
+            decoder = av.CodecContext.create("h264", "r")
+            decoded = decoder.decode(av.Packet(b"".join(h264_depayload(payload) for payload in payloads)))
+            self.assertEqual((decoded[0].width, decoded[0].height), (34, 18))
+            good.close(); await good.wait_closed()
+            from aiortc.mediastreams import MediaStreamError
+            with self.assertRaises(MediaStreamError):
+                await source.recv()
+            self.assertEqual(source.readyState, "ended")
+        finally:
+            source.stop()
+            await source.server.wait_closed()
+
+    async def test_prepared_feed_stop_closes_listener_and_enforces_viewer_limit(self):
+        await worker.prepare_windows({"session": "test-one", "width": 34, "height": 18})
+        await worker.prepare_windows({"session": "test-two", "width": 34, "height": 18})
+        try:
+            with self.assertRaisesRegex(RuntimeError, "Two direct"):
+                await worker.prepare_windows({"session": "test-three", "width": 34, "height": 18})
+        finally:
+            await worker.stop("test-one"); await worker.stop("test-two")
+        self.assertEqual(worker.sessions, {})
+
+
 if __name__ == "__main__":
     unittest.main()

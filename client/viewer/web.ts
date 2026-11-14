@@ -91,15 +91,17 @@ declare const MediaStream: new (tracks: unknown[]) => unknown;
 export interface DirectVideoSignalling {
   config?(): Promise<VideoIceConfiguration>;
   report?(event: VideoClientEvent): Promise<unknown>;
-  offer(input: { display?: number; maxWidth: number; fps: number; sdp: string }): Promise<{ session: string; sdp: string }>;
+  offer(input: { display?: number; expectedDisplayKey?: string; maxWidth: number; fps: number; sdp: string }): Promise<{ session: string; sdp: string; displayKey?: string }>;
   ping(input: { session: string }): Promise<unknown>;
   stop(input: { session: string }): Promise<unknown>;
 }
 const initialVideo = { active: false, connecting: false, fps: 0, rttMs: null as number | null, kbps: 0, relay: null as boolean | null, reason: null as string | null, still: null as string | null };
 
 /** Browser media; Android uses native-video and both retain the portable JPEG fallback. */
-export function useDirectVideo(node: unknown, enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling, retry = 0) {
+export function useDirectVideo(node: unknown, enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling, retry: number | string = 0, expectedDisplayKey?: string) {
   const [state, setState] = useState(initialVideo);
+  const profile = JSON.stringify([display, maxWidth, fps, retry, expectedDisplayKey]);
+  const boundProfile = useRef(profile);
   const [foreground, setForeground] = useState(AppState.currentState !== "background");
   useEffect(() => AppState.addEventListener("change", (value) => setForeground(value !== "background")).remove, []);
   const rpc = useRef(signalling);
@@ -138,6 +140,7 @@ export function useDirectVideo(node: unknown, enabled: boolean, display: number 
       if (session) void stop({ session }).catch(() => {});
       setState({ ...initialVideo, reason, still });
     };
+    boundProfile.current = profile;
     setState({ ...initialVideo, connecting: true });
     video.onloadeddata = () => {
       if (closed) return;
@@ -170,9 +173,10 @@ export function useDirectVideo(node: unknown, enabled: boolean, display: number 
         pc.addEventListener("icegatheringstatechange", gathered); gathered();
       });
       if (closed) return;
-      const answer = await rpc.current.offer({ display, maxWidth, fps, sdp: pc.localDescription!.sdp });
+      const answer = await rpc.current.offer({ display, expectedDisplayKey, maxWidth, fps, sdp: pc.localDescription!.sdp });
       session = answer.session;
       if (closed) { void stop({ session }).catch(() => {}); return; }
+      if (expectedDisplayKey && answer.displayKey !== expectedDisplayKey) throw new Error("Display changed; wait for a fresh frame");
       firstFrame = setTimeout(() => end("Direct video did not arrive; using Paseo frames."), 8000);
       await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       heartbeat = setInterval(() => { if (session) void rpc.current.ping({ session }).catch(() => end("Video session ended; using Paseo frames.")); }, 3000);
@@ -196,8 +200,8 @@ export function useDirectVideo(node: unknown, enabled: boolean, display: number 
     };
     void start().catch((error) => end(`${error instanceof Error ? error.message : "Direct video unavailable"}; using Paseo frames.`));
     return () => end(null);
-  }, [node, enabled, display, maxWidth, fps, supported, foreground, retry]);
-  return { ...state, supported };
+  }, [node, enabled, display, maxWidth, fps, supported, foreground, retry, expectedDisplayKey, profile]);
+  return { ...state, active: state.active && boundProfile.current === profile, supported };
 }
 
 interface WebTouchEvent { touches: ArrayLike<{ clientX: number; clientY: number }>; preventDefault(): void }

@@ -96,27 +96,32 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
   const [aspect, setAspect] = useState(16 / 10);
   const content = fitContent(stage, aspect, !isWeb && rotated);
   const quality = QUALITIES[qualityIndex]!;
-  // Direct video does not carry frame display keys yet; managed hotplug uses identity-bearing JPEGs.
-  const directEnabled = canCapture && !paused && preferDirect && !managedSelection && lastGood.current?.webrtc === true;
+  // Managed Windows video is pinned to an authenticated, identity-checking capture feed.
+  const videoIdentity = lastGood.current?.videoDisplayIdentity === true;
+  const videoKey = videoIdentity ? display?.stableKey : undefined;
+  const safeDirect = !managedSelection || (videoIdentity && !!videoKey);
+  const directEnabled = canCapture && !paused && status.data?.locked !== true && fallback?.state !== "starting" && preferDirect && safeDirect && lastGood.current?.webrtc === true;
   // Keep desktop detail available when a phone zooms in; its current layout width
   // must not cap every quality level to the same low-resolution video stream.
   const videoWidth = [1280, 1920, 2560][qualityIndex]!;
   const videoFps = 30;
-  const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo }, videoAttempt);
-  const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), report: reportVideo, offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused, videoAttempt);
+  const videoProfile = videoIdentity && display ? `${videoAttempt}:${display.x}:${display.y}:${display.width}:${display.height}` : videoAttempt;
+  const browserDirect = useDirectVideo(videoNode, isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), offer: offerVideo, ping: pingVideo, stop: stopVideo }, videoProfile, videoKey);
+  const nativeDirect = useNativeVideo(!isWeb && directEnabled, display?.id, videoWidth, videoFps, { config: () => configureVideo({}), report: reportVideo, offer: offerVideo, ping: pingVideo, stop: stopVideo }, paused, videoProfile, videoKey);
   const direct = isWeb ? browserDirect : nativeDirect;
   const frames = useFrames(canCapture && !paused && !direct.active, display?.id, quality, content.width * Math.ceil(zoom), lastGood.current?.frameWait === true, display?.stableKey, lastGood.current?.platform);
   const frameAspect = frames.display ? frames.display.width / frames.display.height : null;
   useEffect(() => { if (frameAspect) setAspect(frameAspect); }, [frameAspect]);
   const frameMatchesDisplay = !!frames.uri && !!frames.display && frames.display.id === display?.id
     && (display?.stableKey === undefined || frames.display.stableKey === display.stableKey)
-    && (!fallback?.selectedKey || frames.display.stableKey === fallback.selectedKey);
+    && (!fallback?.selectedKey || frames.display.stableKey === fallback.selectedKey)
+    && (!videoIdentity || (frames.display.x === display?.x && frames.display.y === display?.y && frames.display.width === display?.width && frames.display.height === display?.height));
   const ownership = useOwnership(host.id, viewer.viewerId);
   const hostControlBase = useControlPause(host.id);
   const hostControl = { ...hostControlBase, paused: ownership.state?.paused ?? hostControlBase.paused };
   useEffect(() => { if (!hostControl.paused) setInputError(null); }, [hostControl.paused]);
-  const controlling = !!viewer.viewerId && ((direct.active && !managedSelection) || frameMatchesDisplay) && !fallbackChange.isPending && control && !paused && lastGood.current?.accessibility === true && !hostControl.paused && ownership.known && ownership.state?.mode !== "agent" && !ownership.changing;
-  const send = useInputQueue(display?.id, setInputError, chooseDisplay, frames.display?.stableKey, controlling, viewer.viewerId);
+  const controlling = !!viewer.viewerId && ((direct.active && safeDirect) || frameMatchesDisplay) && !fallbackChange.isPending && control && !paused && lastGood.current?.accessibility === true && !hostControl.paused && ownership.known && ownership.state?.mode !== "agent" && !ownership.changing;
+  const send = useInputQueue(display?.id, setInputError, chooseDisplay, direct.active && videoIdentity ? videoKey : frames.display?.stableKey, controlling, viewer.viewerId, direct.active && videoIdentity && display ? { x: display.x, y: display.y, width: display.width, height: display.height } : undefined);
   const clipboard = useHostClipboard(controlling && ownership.state?.humanPriority === true, viewer.viewerId);
   const pasteOnHost = useCallback((text: string, shift = false) => {
     if (!controlling) return;
@@ -241,7 +246,7 @@ function ScreenViewer({ theme, layout, host, feedbackEnabled, setFeedbackEnabled
               <View style={styles.connectionStats}>
                 <Text accessibilityLabel={t("frameRateLabel", { value: fps })} style={styles.connectionStat}>{`${fps} fps`}</Text>
                 <Text accessibilityLabel={t("bandwidthLabel", { value: bandwidth })} style={styles.connectionStat}>{bandwidth}</Text>
-                {direct.supported && !managedSelection && lastGood.current?.webrtc
+                {direct.supported && safeDirect && lastGood.current?.webrtc
                   ? <Pressable accessibilityRole="button" accessibilityLabel={direct.active ? t("paseoOnly") : t("tryWebrtc")} accessibilityHint={t("connectionModeLabel", { mode: connectionMode })} onPress={() => {
                       if (direct.active) setPreferDirect(false);
                       else { setPreferDirect(true); setVideoAttempt(value => value + 1); }

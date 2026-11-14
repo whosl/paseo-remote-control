@@ -32,7 +32,13 @@ reduce a separate cap on loss even when REMB is optimistic; clean reports recove
 that cap slowly. No installed
 library files are patched. A quantized capture filter avoids undershooting the
 requested cadence when compositor timestamps jitter. Old screenshot helpers
-remain for other desktops.
+remain for other desktops. Windows uses the existing limited interactive C# helper
+for raw BGRA capture. It checks stable monitor identity, geometry and unlocked
+state around each frame, then writes to one nonce-authenticated, loopback-only
+Python receiver per viewer. Session 0 never performs desktop capture. Frames stay
+bounded through the latest-frame track. Offer/answer identities are checked by both
+browser and Android, and input includes expected geometry as well as the monitor
+key. Windows video needs no new publicly listening port.
 Agent accessibility logic remains in `server/computer-use-mcp/`, independent of
 Paseo imports. Root entry points handle SDK wiring and lifecycle cleanup.
 

@@ -36,7 +36,7 @@ export class NativeVideoSession {
 
   constructor(
     private readonly nonce: string,
-    private readonly request: { display?: number; maxWidth: number; fps: number },
+    private readonly request: { display?: number; expectedDisplayKey?: string; maxWidth: number; fps: number },
     private readonly signalling: DirectVideoSignalling,
     private readonly command: (command: NativeVideoCommand) => void,
     private readonly update: (state: NativeVideoState) => void,
@@ -102,6 +102,7 @@ export class NativeVideoSession {
       const answer = await this.signalling.offer({ ...this.request, sdp });
       if (this.closed) { void this.signalling.stop({ session: answer.session }).catch(() => {}); return; }
       this.session = answer.session;
+      if (this.request.expectedDisplayKey && answer.displayKey !== this.request.expectedDisplayKey) throw new Error("Display changed; wait for a fresh frame");
       this.event("answer");
       this.send({ answer: answer.sdp });
       this.heartbeat = setInterval(() => {

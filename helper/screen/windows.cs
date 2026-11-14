@@ -19,6 +19,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.IO.Pipes;
+using System.Net.Sockets;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -103,6 +104,7 @@ namespace PaseoScreen
             }
             finally
             {
+                RawVideo.StopAll();
                 Input.ReleaseAll();
                 try { ControlNotice.Stop(); } catch { }
                 if (stream != null) stream.Dispose();
@@ -147,6 +149,7 @@ namespace PaseoScreen
                     case "frame":
                         result = Capture.Frame(request);
                         break;
+                    case "video-start": result = RawVideo.Start(request); break;
                     case "input":
                         result = Input.Handle(request);
                         break;
@@ -540,6 +543,14 @@ namespace PaseoScreen
             return List(topology);
         }
 
+        // Capturing an already pinned target needs only fresh active paths. The physical-first
+        // policy still uses ALL_PATHS, including inactive physical connectors, above.
+        public static List<DisplayInfo> Active(out WindowsTopology topology)
+        {
+            topology = WindowsTopology.Read(false);
+            return List(topology);
+        }
+
         static List<DisplayInfo> List(WindowsTopology topology)
         {
             var displays = new List<DisplayInfo>();
@@ -694,6 +705,73 @@ namespace PaseoScreen
         }
     }
 
+    // Private, authenticated loopback feed to the worker. It carries pixels only, never input.
+    // A blocking write provides backpressure; no queue of stale desktop frames is retained.
+    static class RawVideo
+    {
+        static readonly List<TcpClient> clients = new List<TcpClient>();
+
+        public static Dictionary<string, object> Start(Dictionary<string, object> request)
+        {
+            string key = Program.Str(request, "stableKey"), token = Program.Str(request, "token");
+            int port = (int)Program.Num(request, "port", 0);
+            int width = (int)Program.Num(request, "width", 0), height = (int)Program.Num(request, "height", 0);
+            int fps = (int)Program.Num(request, "fps", 0);
+            if (port < 1 || port > 65535 || token == null || token.Length != 64 ||
+                width < 2 || width > 2560 || height < 2 || height > 8192 || (width & 1) != 0 || (height & 1) != 0 || fps < 1 || fps > 30)
+                throw new HelperError("Invalid private video feed");
+            WindowsTopology topology;
+            var display = Displays.ByKey(key, Displays.List(out topology));
+            if (!topology.Reliable || display.TargetCount != 1 || Native.SecureDesktopShowing()) throw new HelperError("Unlock a stable display before starting video");
+            var client = new TcpClient();
+            client.NoDelay = true; client.SendTimeout = 2000; client.SendBufferSize = 64 * 1024;
+            lock (clients) { if (clients.Count >= 2) { client.Close(); throw new HelperError("Two video captures are already active"); } clients.Add(client); }
+            var thread = new Thread(delegate() {
+                bool timer = Native.timeBeginPeriod(1) == 0;
+                try
+                {
+                    client.Connect("127.0.0.1", port);
+                    using (var stream = client.GetStream())
+                    using (var full = new Bitmap(display.Bounds.Width, display.Bounds.Height, PixelFormat.Format32bppArgb))
+                    using (var scaled = new Bitmap(width, height, PixelFormat.Format32bppArgb))
+                    using (var graphics = Graphics.FromImage(full))
+                    using (var resize = Graphics.FromImage(scaled))
+                    {
+                        var hello = Encoding.ASCII.GetBytes(token + "\n"); stream.Write(hello, 0, hello.Length);
+                        resize.InterpolationMode = InterpolationMode.Bilinear;
+                        var bytes = new byte[width * height * 4];
+                        var clock = Stopwatch.StartNew(); double next = 0;
+                        for (;;)
+                        {
+                            var current = Displays.ByKey(key, Displays.Active(out topology));
+                            if (!topology.Reliable || current.TargetCount != 1 || current.Bounds != display.Bounds || current.DeviceName != display.DeviceName || Native.SecureDesktopShowing()) break;
+                            graphics.CopyFromScreen(display.Bounds.Location, Point.Empty, display.Bounds.Size, CopyPixelOperation.SourceCopy);
+                            Capture.DrawCursor(graphics, display.Bounds);
+                            var pixels = width == full.Width && height == full.Height ? full : scaled;
+                            if (pixels == scaled) resize.DrawImage(full, 0, 0, width, height);
+                            // Reject a frame if the topology/secure desktop changed during the GDI copy.
+                            current = Displays.ByKey(key, Displays.Active(out topology));
+                            if (!topology.Reliable || current.Bounds != display.Bounds || current.DeviceName != display.DeviceName || Native.SecureDesktopShowing()) break;
+                            var data = pixels.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                            try { for (int row = 0; row < height; row++) Marshal.Copy(IntPtr.Add(data.Scan0, row * data.Stride), bytes, row * width * 4, width * 4); }
+                            finally { pixels.UnlockBits(data); }
+                            var timestamp = BitConverter.GetBytes((long)(clock.Elapsed.TotalSeconds * 90000));
+                            stream.Write(timestamp, 0, timestamp.Length); stream.Write(bytes, 0, bytes.Length);
+                            next = Math.Max(next + 1000.0 / fps, clock.Elapsed.TotalMilliseconds);
+                            int delay = (int)(next - clock.Elapsed.TotalMilliseconds); if (delay > 0) Thread.Sleep(delay);
+                        }
+                    }
+                }
+                catch (Exception) { /* Disconnect, hotplug and lock end this feed; the viewer falls back. */ }
+                finally { client.Close(); lock (clients) clients.Remove(client); if (timer) Native.timeEndPeriod(1); }
+            });
+            thread.IsBackground = true; thread.Start();
+            return new Dictionary<string, object> { { "started", true } };
+        }
+
+        public static void StopAll() { lock (clients) { foreach (var client in clients) client.Close(); clients.Clear(); } }
+    }
+
     // MARK: Capture
 
     static class Capture
@@ -788,7 +866,7 @@ namespace PaseoScreen
         }
 
         /// CopyFromScreen leaves out the mouse pointer, so draw it in, as the macOS and Linux helpers show it.
-        static void DrawCursor(Graphics graphics, Rectangle bounds)
+        public static void DrawCursor(Graphics graphics, Rectangle bounds)
         {
             var info = new Native.CURSORINFO();
             info.cbSize = Marshal.SizeOf(typeof(Native.CURSORINFO));
@@ -900,6 +978,12 @@ namespace PaseoScreen
             var display = Displays.Resolve(request.ContainsKey("display") ? request["display"] : null, displays);
             if (request.ContainsKey("expectedDisplayKey") && !string.Equals(Program.Str(request, "expectedDisplayKey"), display.StableKey, StringComparison.Ordinal))
                 throw new HelperError("Display changed; wait for a fresh frame");
+            if (Program.Has(request, "expectedDisplayBounds")) {
+                var expected = request["expectedDisplayBounds"] as Dictionary<string, object>;
+                if (Program.Num(expected, "x", double.NaN) != display.Bounds.X || Program.Num(expected, "y", double.NaN) != display.Bounds.Y ||
+                    Program.Num(expected, "width", 0) != display.Bounds.Width || Program.Num(expected, "height", 0) != display.Bounds.Height)
+                    throw new HelperError("Display changed; wait for a fresh frame");
+            }
             var events = request.ContainsKey("events") ? request["events"] as IList : null;
             int handled = 0;
             if (events != null)
@@ -1680,6 +1764,8 @@ namespace PaseoScreen
         [StructLayout(LayoutKind.Sequential)]
         struct SP_DEVINFO_DATA { public uint cbSize; public Guid classGuid; public uint devInst; public IntPtr reserved; }
 
+        [DllImport("winmm.dll")] public static extern uint timeBeginPeriod(uint period);
+        [DllImport("winmm.dll")] public static extern uint timeEndPeriod(uint period);
         [DllImport("user32.dll")] public static extern int GetDisplayConfigBufferSizes(uint flags, out uint pathCount, out uint modeCount);
         [DllImport("user32.dll")] public static extern int QueryDisplayConfig(uint flags, ref uint pathCount, [Out] DISPLAYCONFIG_PATH_INFO[] paths, ref uint modeCount, [Out] DISPLAYCONFIG_MODE_INFO[] modes, IntPtr topologyId);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME info);

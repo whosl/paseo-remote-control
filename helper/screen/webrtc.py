@@ -8,6 +8,9 @@ import signal
 import subprocess
 import sys
 import time
+import secrets
+import struct
+import threading
 
 import av
 import aiortc.codecs as codecs
@@ -18,6 +21,19 @@ from aiortc.contrib.media import MediaPlayer
 logging.basicConfig(stream=sys.stderr, level=logging.ERROR)
 sessions = {}
 closing = False
+windows_timer = False
+
+
+def video_timer(enable):
+    global windows_timer
+    if sys.platform != "win32" or enable == windows_timer:
+        return
+    import ctypes
+    if enable:
+        windows_timer = ctypes.windll.winmm.timeBeginPeriod(1) == 0
+    else:
+        ctypes.windll.winmm.timeEndPeriod(1)
+        windows_timer = False
 
 
 class ScreenH264Encoder(H264Encoder):
@@ -52,7 +68,7 @@ class ScreenH264Encoder(H264Encoder):
         self._bitrate = min(max(estimate, self._probe_target), self._maximum, self._loss_ceiling or self._maximum)
 
     def packet_loss(self, fraction):
-        if fraction >= 0.05:
+        if fraction >= (0.02 if sys.platform == "win32" else 0.05):
             self._probing = False
             self._probe_target = 0
             self._last_loss = time.monotonic()
@@ -190,6 +206,81 @@ class LatestVideo(MediaStreamTrack):
             self.pump.cancel()
 
 
+class WindowsVideo(MediaStreamTrack):
+    """One bounded raw BGRA feed from the interactive, identity-checking helper."""
+    kind = "video"
+
+    def __init__(self, width, height):
+        super().__init__()
+        if not (2 <= width <= 2560 and 2 <= height <= 8192 and width % 2 == height % 2 == 0):
+            raise ValueError("Invalid raw video dimensions")
+        self.width, self.height = width, height
+        self.token = secrets.token_hex(32)
+        self.reader = None
+        self.writer = None
+        self.server = None
+        self.ready = asyncio.Event()
+        self.claimed = False
+
+    async def accept(self, reader, writer):
+        try:
+            token = await asyncio.wait_for(reader.readuntil(b"\n"), 2)
+            if self.claimed or not secrets.compare_digest(token, (self.token + "\n").encode()):
+                return
+            self.claimed = True
+            self.reader, self.writer = reader, writer
+            self.server.close()
+            self.ready.set()
+            return
+        except Exception:
+            pass
+        finally:
+            if writer is not self.writer:
+                writer.close()
+
+    async def recv(self):
+        from aiortc.mediastreams import MediaStreamError
+        try:
+            await asyncio.wait_for(self.ready.wait(), 5)
+            if self.readyState != "live":
+                raise MediaStreamError
+            timestamp = struct.unpack("<q", await asyncio.wait_for(self.reader.readexactly(8), 5))[0]
+            raw = await asyncio.wait_for(self.reader.readexactly(self.width * self.height * 4), 5)
+            image = av.VideoFrame(self.width, self.height, "bgra")
+            plane = image.planes[0]
+            row_bytes = self.width * 4
+            if plane.line_size == row_bytes:
+                plane.update(raw)
+            else:
+                padded = bytearray(plane.buffer_size)
+                for row in range(self.height):
+                    padded[row * plane.line_size:row * plane.line_size + row_bytes] = raw[row * row_bytes:(row + 1) * row_bytes]
+                plane.update(padded)
+            image.pts, image.time_base = timestamp, fractions.Fraction(1, 90000)
+            return image
+        except (Exception, asyncio.CancelledError):
+            self.stop()
+            raise MediaStreamError
+
+    def stop(self):
+        super().stop()
+        if self.server is not None:
+            self.server.close()
+        if self.writer is not None:
+            self.writer.close()
+        self.ready.set()
+
+
+async def prepare_windows(message):
+    if len(sessions) >= 2:
+        raise RuntimeError("Two direct screen viewers are already active; use the Paseo fallback")
+    source = WindowsVideo(int(message["width"]), int(message["height"]))
+    source.server = await asyncio.start_server(source.accept, "127.0.0.1", 0, limit=128)
+    sessions[message["session"]] = {"source": source, "at": time.monotonic(), "pc": None}
+    video_timer(True)
+    return {"port": source.server.sockets[0].getsockname()[1], "token": source.token}
+
+
 async def stop(session):
     state = sessions.pop(session, None)
     if state is None:
@@ -202,18 +293,25 @@ async def stop(session):
     track = state.get("track")
     if track is not None:
         track.stop()
+    source = state.get("source")
+    if source is not None:
+        source.stop()
     player = state.get("player")
     if player is not None and player.video is not None:
         player.video.stop()
-    await state["pc"].close()
+    if state["pc"] is not None:
+        await state["pc"].close()
+    if not any("source" in item for item in sessions.values()):
+        video_timer(False)
 
 
 async def offer(message):
     session = message["session"]
-    if len(sessions) >= 2:
+    if session not in sessions and len(sessions) >= 2:
         raise RuntimeError("Two direct screen viewers are already active; use the Paseo fallback")
     pc = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**server) for server in message.get("iceServers", [])]))
-    state = {"pc": pc, "at": time.monotonic()}
+    state = sessions.get(session, {})
+    state.update({"pc": pc, "at": time.monotonic()})
     sessions[session] = state
 
     @pc.on("connectionstatechange")
@@ -223,23 +321,25 @@ async def offer(message):
 
     try:
         await pc.setRemoteDescription(RTCSessionDescription(sdp=message["sdp"], type="offer"))
-        width, fps = int(message["width"]), int(message["fps"])
-        filter_string = capture_filter(width, fps)
-        process = subprocess.Popen([
-            message["recorder"], "-o", message["output"], "--no-dmabuf", "-c", "rawvideo", "-m", "nut",
-            "-F", filter_string, "-x", "yuv420p", "-f", "pipe:1",
-        ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        state["capture"] = process
-        # Raw YUV frames go straight to the WebRTC encoder: no JPEG encode/decode round trip.
-        player = await asyncio.to_thread(MediaPlayer, process.stdout, format="nut", options={"probesize": "32", "analyzeduration": "0"})
-        state["player"] = player
-        if session not in sessions:
-            if player.video is not None:
-                player.video.stop()
-            raise RuntimeError("Screen session was cancelled")
-        if player.video is None:
-            raise RuntimeError("The native capture returned no video track")
-        track = LatestVideo(player.video)
+        if "source" in state:
+            source = state["source"]
+        else:
+            width, fps = int(message["width"]), int(message["fps"])
+            process = subprocess.Popen([
+                message["recorder"], "-o", message["output"], "--no-dmabuf", "-c", "rawvideo", "-m", "nut",
+                "-F", capture_filter(width, fps), "-x", "yuv420p", "-f", "pipe:1",
+            ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            state["capture"] = process
+            player = await asyncio.to_thread(MediaPlayer, process.stdout, format="nut", options={"probesize": "32", "analyzeduration": "0"})
+            state["player"] = player
+            if session not in sessions:
+                if player.video is not None:
+                    player.video.stop()
+                raise RuntimeError("Screen session was cancelled")
+            if player.video is None:
+                raise RuntimeError("The native capture returned no video track")
+            source = player.video
+        track = LatestVideo(source)
         state["track"] = track
         sender = pc.addTrack(track)
         state["sender"] = sender
@@ -258,12 +358,17 @@ async def offer(message):
 
 async def dispatch(message):
     method = message["method"]
+    if method == "windows-prepare":
+        return await prepare_windows(message)
     if method == "offer":
         return await asyncio.wait_for(offer(message), timeout=12)
     if method == "ping":
         state = sessions.get(message["session"])
         if state is None:
             raise RuntimeError("Direct screen session has ended")
+        if state.get("track") is not None and state["track"].readyState != "live":
+            await stop(message["session"])
+            raise RuntimeError("Screen capture ended; wait for a fresh frame")
         state["at"] = time.monotonic()
         return {}
     if method == "stop":
@@ -299,16 +404,31 @@ async def main():
     loop = asyncio.get_running_loop()
     end = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, end.set)
-    reader = asyncio.StreamReader(limit=128 * 1024)
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+        try:
+            loop.add_signal_handler(sig, end.set)
+        except NotImplementedError:
+            pass  # Windows worker exits on stdin EOF / process termination.
+    # stdin is not an overlapped Windows pipe. A daemon reader also avoids an
+    # executor thread blocking interpreter shutdown after Linux SIGTERM.
+    lines = asyncio.Queue(maxsize=32)
+
+    def read_stdin():
+        try:
+            while True:
+                line = sys.stdin.buffer.readline(128 * 1024)
+                asyncio.run_coroutine_threadsafe(lines.put(line), loop).result()
+                if not line:
+                    return
+        except Exception:
+            pass
+
+    threading.Thread(target=read_stdin, daemon=True).start()
     tasks = set()
     reaper = asyncio.create_task(reap())
 
     async def read_commands():
         while not end.is_set():
-            line = await reader.readline()
+            line = await lines.get()
             if not line:
                 end.set()
                 return

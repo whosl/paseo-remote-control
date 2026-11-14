@@ -12,7 +12,7 @@ const source = readFileSync(new URL("../client/viewer/use-screen.ts", import.met
 const code = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 type RpcName = "input" | "release";
-type InputArgs = { display?: number; expectedDisplayKey?: string; viewerId?: string; events?: ScreenInputEvent[] };
+type InputArgs = { display?: number; expectedDisplayKey?: string; expectedDisplayBounds?: { x: number; y: number; width: number; height: number }; viewerId?: string; events?: ScreenInputEvent[] };
 type Reply = { handled?: number; pointerDisplay?: number };
 type EffectSlot = { deps: readonly unknown[]; cleanup?: () => void };
 
@@ -74,9 +74,9 @@ function setup() {
   return {
     calls, errors, pointerDisplays,
     names: () => calls.map((call) => call.name),
-    render(key = "physical-A", enabled = true, displayId = 7, viewerId?: string) {
+    render(key = "physical-A", enabled = true, displayId = 7, viewerId?: string, bounds?: { x: number; y: number; width: number; height: number }) {
       cursor = 0;
-      const send = api.useInputQueue(displayId, (error) => errors.push(error), (id) => pointerDisplays.push(id), key, enabled, viewerId);
+      const send = api.useInputQueue(displayId, (error) => errors.push(error), (id) => pointerDisplays.push(id), key, enabled, viewerId, bounds);
       while (effects.length) effects.shift()!();
       return send;
     },
@@ -240,4 +240,17 @@ describe("viewer input queue release ordering", () => {
     expect(h.calls[2]!.args.expectedDisplayKey).toBe("virtual-B");
     await h.resolve("input", { handled: 1 });
   });
+  it("releases held input and binds new events to updated display geometry", async () => {
+    const h = setup();
+    const a = { x: 0, y: 0, width: 1920, height: 1080 };
+    const b = { ...a, width: 1280, height: 720 };
+    h.render("physical-A", true, 7, undefined, a)(down);
+    await h.resolve("input", { handled: 1 });
+    const send = h.render("physical-A", true, 7, undefined, b);
+    expect(h.names()).toEqual(["input", "release"]);
+    send(down); await h.resolve("release");
+    expect(h.calls.at(-1)!.args.expectedDisplayBounds).toEqual(b);
+    await h.resolve("input", { handled: 1 });
+  });
+
 });

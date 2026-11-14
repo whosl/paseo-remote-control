@@ -187,6 +187,17 @@ describe("native WebView bridge", () => {
     expect(close).toHaveBeenCalledTimes(1); expect(canvas.style.display).toBe("block"); h.session.stop();
   });
 
+  it.each([undefined, "other-monitor"])("rejects an Android answer with the wrong display identity %s", async displayKey => {
+    const signalling = { offer: vi.fn(async () => ({ session: "wrong-session", sdp: "answer", displayKey })), stop: vi.fn(async () => ({})), ping: vi.fn(async () => ({})) };
+    const states: NativeVideoState[] = [];
+    const session = new NativeVideoSession(nonce, { display: 1, expectedDisplayKey: "monitor-A", maxWidth: 1920, fps: 30 }, signalling, () => {}, state => states.push(state));
+    session.receive(event("offer", 1, { sdp: "offer" })); await settle();
+    expect(signalling.stop).toHaveBeenCalledWith({ session: "wrong-session" });
+    expect(states.at(-1)?.active).toBe(false);
+    expect(states.at(-1)?.reason).toContain("Display changed");
+    session.stop();
+  });
+
   it("uses an inline receive-only document without remote assets or an app-wide messaging override", () => {
     const html = nativeVideoDocument(nonce);
     expect(html).toContain("direction:'recvonly'");

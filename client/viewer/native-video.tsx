@@ -54,11 +54,11 @@ type Playback = {
 };
 
 /** Reuses Paseo's compiled WebView through the public React Native native-view API. */
-export function useNativeVideo(enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling, freeze = false, retry = 0) {
+export function useNativeVideo(enabled: boolean, display: number | undefined, maxWidth: number, fps: number, signalling: DirectVideoSignalling, freeze = false, retry: number | string = 0, expectedDisplayKey?: string) {
   const NativeView = androidVideoView();
   const [foreground, setForeground] = useState(AppState.currentState !== "background");
   useEffect(() => AppState.addEventListener("change", value => setForeground(value !== "background")).remove, []);
-  const profile = `${display}:${maxWidth}:${fps}:${retry}`;
+  const profile = `${display}:${maxWidth}:${fps}:${retry}:${expectedDisplayKey ?? ""}`;
   const [reported, setReported] = useState({ profile, state: initialNativeVideo });
   const state = reported.profile === profile ? reported.state : initialNativeVideo;
   const [playback, setPlayback] = useState<Playback | null>(null);
@@ -68,7 +68,7 @@ export function useNativeVideo(enabled: boolean, display: number | undefined, ma
     if (!enabled || !foreground || !NativeView) { setReported({ profile, state: initialNativeVideo }); return; }
     let current = true;
     const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const session = new NativeVideoSession(nonce, { display, maxWidth, fps }, rpc.current,
+    const session = new NativeVideoSession(nonce, { display, expectedDisplayKey, maxWidth, fps }, rpc.current,
       command => setPlayback(old => old?.nonce === nonce ? { ...old, command } : old),
       next => {
         if (!current) return;
@@ -83,7 +83,7 @@ export function useNativeVideo(enabled: boolean, display: number | undefined, ma
       } catch { session.stop("Direct video unavailable; using Paseo frames."); }
     })();
     return () => { current = false; session.stop(); };
-  }, [enabled, foreground, NativeView, display, maxWidth, fps, profile]);
+  }, [enabled, foreground, NativeView, display, maxWidth, fps, profile, expectedDisplayKey]);
 
   const fail = (reason: string) => playback?.session.stop(reason);
   const video = NativeView && playback && playback.profile === profile && foreground ? (

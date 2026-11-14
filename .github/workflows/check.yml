@@ -37,7 +37,7 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm run lint
-      - run: npx vitest run test/windows.test.ts test/windows-ipc.test.ts test/windows-display.test.ts test/control-coordinator.test.ts test/preferences-migration.test.ts test/viewer-input-queue.test.ts test/viewer-frame-loop.test.ts test/translations.test.ts test/frame-metrics.test.ts test/viewer-sessions.test.ts test/native-video.test.ts test/native-video-view.test.ts test/video-config.test.ts
+      - run: npx vitest run test/windows.test.ts test/windows-video.test.ts test/windows-ipc.test.ts test/windows-display.test.ts test/control-coordinator.test.ts test/preferences-migration.test.ts test/viewer-input-queue.test.ts test/viewer-frame-loop.test.ts test/translations.test.ts test/frame-metrics.test.ts test/viewer-sessions.test.ts test/native-video.test.ts test/native-video-view.test.ts test/video-config.test.ts
       - run: npm run test:viewer
       - name: Parse provisioning scripts with Windows PowerShell 5.1
         shell: powershell
@@ -52,3 +52,10 @@ jobs:
         run: |
           & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:winexe /out:"$env:RUNNER_TEMP\paseo-rc-helper.exe" /reference:System.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll "$PWD\helper\screen\windows.cs"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: helper/screen/webrtc-requirements.txt
+      - run: pip install -r helper/screen/webrtc-requirements.txt
+      - run: python test/webrtc-worker.test.py

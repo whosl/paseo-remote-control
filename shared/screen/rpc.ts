@@ -61,6 +61,7 @@ const statusSchema = z.object({
   backend: z.string().optional(),
   captureMode: z.enum(["native-stream", "screenshot"]).optional(),
   webrtc: z.boolean().optional(),
+  videoDisplayIdentity: z.boolean().optional(),
   frameWait: z.boolean().optional(),
   /** Wayland: the desktop's screen sharing dialog is open on the host, waiting for an answer. */
   awaitingApproval: z.boolean().optional(),
@@ -161,7 +162,7 @@ export const releaseInputRpc = defineRpc({ name: "screen.release-input", input: 
 
 export const inputRpc = defineRpc({
   name: "screen.input",
-  input: z.object({ display: z.number().optional(), expectedDisplayKey: z.string().max(1024).optional(), viewerId: z.string().uuid().optional(), events: z.array(inputEventSchema).max(200) }),
+  input: z.object({ display: z.number().optional(), expectedDisplayKey: z.string().max(1024).optional(), expectedDisplayBounds: z.object({ x: z.number().int(), y: z.number().int(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), viewerId: z.string().uuid().optional(), events: z.array(inputEventSchema).max(200) }),
   output: z.object({
     handled: z.number(),
     /** Display the pointer ended on, which differs from `display` after a drag onto another display. */
@@ -222,8 +223,8 @@ export const videoClientEventRpc = defineRpc({ name: "screen.video-client-event"
 
 export const videoOfferRpc = defineRpc({
   name: "screen.video-offer",
-  input: z.object({ display: z.number().optional(), maxWidth: z.number().int().min(320).max(2560), fps: z.number().int().min(1).max(30), sdp: z.string().min(1).max(65536) }),
-  output: z.object({ session: z.string().uuid(), sdp: z.string().max(65536) }),
+  input: z.object({ display: z.number().optional(), expectedDisplayKey: z.string().max(1024).optional(), maxWidth: z.number().int().min(320).max(2560), fps: z.number().int().min(1).max(30), sdp: z.string().min(1).max(65536) }),
+  output: z.object({ session: z.string().uuid(), sdp: z.string().max(65536), displayKey: z.string().max(1024).optional() }),
 });
 export const videoPingRpc = defineRpc({ name: "screen.video-ping", input: z.object({ session: z.string().uuid() }), output: z.object({}) });
 export const videoStopRpc = defineRpc({ name: "screen.video-stop", input: z.object({ session: z.string().uuid() }), output: z.object({}) });

@@ -215,7 +215,7 @@ function buildFailure(error: unknown): string {
 async function removeOldBuilds(): Promise<void> {
   const entries = await readdir(CACHE_ROOT).catch(() => [] as string[]);
   await Promise.all(
-    entries.filter((name) => name !== buildName(null) && name !== buildName("wayland")).map((name) => rm(path.join(CACHE_ROOT, name), { recursive: true, force: true })),
+    entries.filter((name) => /^[a-f0-9]{16}(?:-wayland)?$/.test(name) && name !== buildName(null) && name !== buildName("wayland")).map((name) => rm(path.join(CACHE_ROOT, name), { recursive: true, force: true })),
   );
 }
 

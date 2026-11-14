@@ -6,6 +6,7 @@ import type { ControlCoordinator } from "../control/coordinator";
 import type { WindowsDisplayManager } from "../host/windows-display";
 import { readPreferredDisplay, writePreferredDisplay } from "./preferences";
 import { readVideoIceConfiguration } from "./video-config";
+import { WindowsVideo } from "./windows-video";
 import { chooseDisplayRpc, clipboardRpc, controlStateRpc, setControlPausedRpc, frameRpc, inputRpc, releaseInputRpc, requestPermissionsRpc, statusRpc, videoConfigRpc, videoClientEventRpc, videoOfferRpc, videoPingRpc, videoStopRpc, type ScreenStatus } from "../../shared/screen/rpc";
 
 type ScreenHelper = Pick<HelperProcess, "request" | "stop">;
@@ -16,6 +17,7 @@ export default function contribute(server: PluginServerContext, control: Control
   // frames on a thread of their own.
   const capture = helpers?.capture ?? new HelperProcess(log, niri);
   const input = helpers?.input ?? new HelperProcess(log, niri);
+  const windowsVideo = process.platform === "win32" ? new WindowsVideo(capture) : undefined;
   const inputHelper = async () => (process.platform === "linux" && (await linuxBackend()) === "wayland" ? capture : input);
 
   async function readStatus(command: "status" | "request"): Promise<ScreenStatus> {
@@ -49,7 +51,7 @@ export default function contribute(server: PluginServerContext, control: Control
         // Wayland hosts: approval happens in the desktop's own dialog, which may still be open.
         ...(status.backend ? { backend: status.backend } : {}),
         ...(status.captureMode ? { captureMode: status.captureMode } : {}),
-        ...(status.webrtc !== undefined ? { webrtc: status.webrtc } : {}),
+        ...(windowsVideo ? { webrtc: await windowsVideo.available(), videoDisplayIdentity: true } : status.webrtc !== undefined ? { webrtc: status.webrtc } : {}),
         ...(status.frameWait !== undefined ? { frameWait: status.frameWait } : {}),
         ...(status.awaitingApproval !== undefined ? { awaitingApproval: status.awaitingApproval } : {}),
         ...(status.permissionError ? { permissionError: status.permissionError } : {}),
@@ -76,7 +78,7 @@ export default function contribute(server: PluginServerContext, control: Control
     // Connection stages only: never log SDP, ICE credentials, or screen content.
     log(`Video offer received (${request.maxWidth}px, ${request.fps}fps)`);
     try {
-      const response = await capture.request<{ session: string; sdp: string }>("rtc-offer", request);
+      const response = windowsVideo ? await windowsVideo.offer(request) : await capture.request<{ session: string; sdp: string }>("rtc-offer", request);
       log("Video session negotiated");
       return response;
     } catch (error) {
@@ -84,8 +86,8 @@ export default function contribute(server: PluginServerContext, control: Control
       throw error;
     }
   });
-  server.handle(videoPingRpc, (request) => capture.request("rtc-ping", request));
-  server.handle(videoStopRpc, (request) => capture.request("rtc-stop", request));
+  server.handle(videoPingRpc, (request) => windowsVideo ? windowsVideo.command("ping", request.session) : capture.request("rtc-ping", request));
+  server.handle(videoStopRpc, (request) => windowsVideo ? windowsVideo.command("stop", request.session) : capture.request("rtc-stop", request));
   /** Refuses remote input and clipboard access while control is paused on the host. */
   async function assertControlAllowed(): Promise<void> {
     if (control.snapshot().paused || control.snapshot().mode === "agent") throw new Error("Take over remote control before using the clipboard.");
@@ -135,7 +137,7 @@ export default function contribute(server: PluginServerContext, control: Control
 
   return {
     releaseInput,
-    async stop(): Promise<void> { await Promise.all([capture.stop(), input.stop()]); },
+    async stop(): Promise<void> { await windowsVideo?.stop(); await Promise.all([capture.stop(), input.stop()]); },
   };
 }
 

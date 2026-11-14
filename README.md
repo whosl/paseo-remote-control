@@ -58,7 +58,7 @@ the development tests. The installer runs the preparation commands in the manife
 | Linux / Niri | Persistent JPEG, optional direct H.264, touch/trackpad | Focused-window visual tools | Combined live tests on Niri |
 | macOS 14+ | Original screen helper | Original accessibility tools and native stop/overlay | Inherited backends; combined path not tested on a Mac |
 | Other Linux desktops | Original X11/portal viewer | Not implemented | Combined path not tested |
-| Windows 10/11 | GDI JPEG, touch/trackpad | Focused-window visual tools | Combined live tests on a Windows service host |
+| Windows 10/11 | GDI JPEG, optional H.264 WebRTC, touch/trackpad | Focused-window visual tools | Combined live tests on a Windows service host |
 
 Mobile/browser UI is React Native-compatible. Android can receive direct H.264
 video by reusing the WebView already compiled into Paseo, without an additional
@@ -193,9 +193,24 @@ There is no automatic screenshot recording or upload by this plugin.
 
 Windows needs .NET Framework 4.x, Windows PowerShell, Task Scheduler and the Paseo
 user logged in to an unlocked desktop. The helper is compiled on the host with
-the existing Framework C# compiler. No Python, VNC server or extra TCP listener is
-needed. The human viewer uses JPEGs carried by Paseo; Windows H.264/WebRTC and
-changed-frame long polling are not implemented.
+the existing Framework C# compiler. JPEG viewing needs no Python or VNC server.
+Optional WebRTC uses the same pinned Python media environment as Linux:
+
+```powershell
+py -3 -m venv "$env:LOCALAPPDATA\paseo-remote-control\rtc-venv"
+& "$env:LOCALAPPDATA\paseo-remote-control\rtc-venv\Scripts\python.exe" -m pip install -r helper/screen/webrtc-requirements.txt
+```
+
+Create the environment in the desktop profile used by the daemon. Tested with
+Python 3.14 on the Windows service host. The interactive helper streams raw BGRA
+pixels over a short-lived, nonce-authenticated loopback socket to the H.264 worker;
+no JPEG encode/decode round trip or public capture listener is involved. Each feed
+is bound to a stable display identity and geometry, checked around every capture.
+Locking, hotplug, capture failure or connection failure ends video and restores
+JPEG viewing. Input carries the viewed identity and geometry and continues through
+the existing human/agent coordinator. Managed virtual displays support this path.
+The same private STUN/TURN configuration supports outside-network viewing.
+Changed-frame JPEG long polling is not implemented on Windows.
 
 Windows JPEG viewing targets 30 FPS in Fast, 24 in Balanced and 15 in Sharp,
 subject to screen capture time, connection speed and client decoding. Fast and

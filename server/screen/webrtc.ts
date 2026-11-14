@@ -15,15 +15,28 @@ export class WebRtcWorker {
   private pending = new Map<number, Pending>();
   private sequence = 0;
   private stopped = false;
-  private readonly root = path.join(homedir(), ".local/share/paseo-screen");
-  private readonly python = path.join(this.root, "rtc-venv/bin/python");
+  private readonly root = process.platform === "win32" ? path.join(process.env.LOCALAPPDATA || path.join(homedir(), "AppData/Local"), "paseo-remote-control") : path.join(homedir(), ".local/share/paseo-screen");
+  private readonly python = path.join(this.root, process.platform === "win32" ? "rtc-venv/Scripts/python.exe" : "rtc-venv/bin/python");
   private readonly recorder = path.join(this.root, "bin/wf-recorder");
 
   constructor(private readonly log: (message: string) => void) {}
 
   async available(): Promise<boolean> {
-    if (process.platform !== "linux") return false;
-    try { await Promise.all([access(this.python, constants.X_OK), access(this.recorder, constants.X_OK)]); return true; } catch { return false; }
+    if (process.platform !== "linux" && process.platform !== "win32") return false;
+    try { await Promise.all([access(this.python, constants.X_OK), ...(process.platform === "linux" ? [access(this.recorder, constants.X_OK)] : [])]); return true; } catch { return false; }
+  }
+
+  async offerWindows(input: { sdp: string; width: number; height: number; fps: number }, startCapture: (feed: Record<string, unknown>) => Promise<unknown>): Promise<{ session: string; sdp: string }> {
+    if (!(await this.available())) throw new Error("Direct video is unavailable on this host");
+    await this.start(process.env);
+    const session = randomUUID();
+    try {
+      const feed = await this.request("windows-prepare", { session, width: input.width, height: input.height });
+      await startCapture({ ...feed, width: input.width, height: input.height, fps: input.fps });
+      const result = await this.request("offer", { ...input, session, ...await readVideoIceConfiguration({ role: "host" }) });
+      if (result.session !== session || typeof result.sdp !== "string") throw new Error("Invalid direct video answer");
+      return { session, sdp: result.sdp };
+    } catch (error) { await this.request("stop", { session }).catch(() => {}); throw error; }
   }
 
   async offer(input: { sdp: string; output: string; width: number; fps: number }, env: NodeJS.ProcessEnv): Promise<Record<string, unknown>> {
@@ -44,7 +57,7 @@ export class WebRtcWorker {
     if (this.stopped) throw new Error("Direct screen worker stopped");
     if (this.child) return;
     this.starting ??= (async () => {
-      const directory = path.join(homedir(), ".cache/paseo-screen/rtc");
+      const directory = process.platform === "win32" ? path.join(this.root, "rtc") : path.join(homedir(), ".cache/paseo-screen/rtc");
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const file = path.join(directory, `${WEBRTC_HELPER.hash}.py`);
       await writeFile(file, WEBRTC_HELPER.source, { mode: 0o600 });
