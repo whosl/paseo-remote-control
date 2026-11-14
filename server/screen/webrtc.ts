@@ -62,7 +62,12 @@ export class WebRtcWorker {
       const file = path.join(directory, `${WEBRTC_HELPER.hash}.py`);
       await writeFile(file, WEBRTC_HELPER.source, { mode: 0o600 });
       if (this.stopped) throw new Error("Direct screen worker stopped");
-      const child = spawnProcess(this.python, ["-u", file], { env, stdio: "pipe" });
+      const childEnv = { ...env };
+      if (process.platform === "linux") {
+        const vaapi = env.PASEO_REMOTE_CONTROL_VAAPI_ENCODER || path.join(this.root, "bin/vaapi-encoder-v1");
+        try { await access(vaapi, constants.X_OK); childEnv.PASEO_REMOTE_CONTROL_VAAPI_ENCODER = vaapi; } catch { /* Optional hardware helper: software remains available. */ }
+      }
+      const child = spawnProcess(this.python, ["-u", file], { env: childEnv, stdio: "pipe" });
       this.child = child;
       let detail = "";
       child.stderr.on("data", (chunk: Buffer) => { detail = (detail + chunk.toString()).slice(-2000); });
@@ -71,7 +76,7 @@ export class WebRtcWorker {
       lines.on("line", (line) => {
         try {
           const message = JSON.parse(line);
-          if (message.event === "encoder" && (message.backend === "h264_nvenc" || message.backend === "libx264")) {
+          if (message.event === "encoder" && (message.backend === "h264_nvenc" || message.backend === "h264_vaapi" || message.backend === "libx264")) {
             this.log(`Video encoder: ${message.backend}${message.fallback === true ? " (hardware fallback)" : ""}`);
             return;
           }

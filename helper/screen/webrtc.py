@@ -11,6 +11,8 @@ import time
 import secrets
 import struct
 import threading
+import select
+import weakref
 
 import av
 import aiortc.codecs as codecs
@@ -23,6 +25,7 @@ sessions = {}
 closing = False
 windows_timer = False
 output_lock = threading.Lock()
+vaapi_encoders = weakref.WeakSet()
 
 
 def emit(message):
@@ -44,12 +47,107 @@ def video_timer(enable):
         windows_timer = False
 
 
+class VaapiCodec:
+    """Framed private pipes isolate the system VA-API libraries from PyAV's FFmpeg ABI."""
+    name = "h264_vaapi"
+    has_b_frames = False
+    framerate = fractions.Fraction(30, 1)
+    thread_count = 1
+    io_timeout = 3
+
+    def __init__(self, size, bitrate):
+        self.width, self.height = size
+        self.bit_rate = bitrate
+        self.process = None
+        try:
+            binary = os.environ["PASEO_REMOTE_CONTROL_VAAPI_ENCODER"]
+            device = os.environ.get("PASEO_REMOTE_CONTROL_VAAPI_DEVICE", "/dev/dri/renderD128")
+            options = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.DEVNULL, "bufsize": 0}
+            try:
+                self.process = subprocess.Popen([binary, device], **options, pipesize=1024 * 1024)
+            except PermissionError:
+                self.process = subprocess.Popen([binary, device], **options)
+            os.set_blocking(self.process.stdin.fileno(), False)
+            os.set_blocking(self.process.stdout.fileno(), False)
+            if self._read(4, time.monotonic() + self.io_timeout) != b"PVA1":
+                raise RuntimeError("Invalid VA-API helper protocol")
+            vaapi_encoders.add(self)
+        except BaseException:
+            self.close()
+            raise
+
+    def _read(self, count, deadline):
+        result = bytearray()
+        fd = self.process.stdout.fileno()
+        while len(result) < count:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([fd], [], [], remaining)[0]:
+                raise TimeoutError("VA-API encoder timed out")
+            try:
+                chunk = os.read(fd, count - len(result))
+            except BlockingIOError:
+                continue
+            if not chunk:
+                raise RuntimeError("VA-API encoder disconnected")
+            result.extend(chunk)
+        return bytes(result)
+
+    def _write(self, data, deadline):
+        pending = memoryview(data)
+        fd = self.process.stdin.fileno()
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([], [fd], [], remaining)[1]:
+                raise TimeoutError("VA-API encoder timed out")
+            try:
+                sent = os.write(fd, pending)
+            except BlockingIOError:
+                continue
+            if not sent:
+                raise RuntimeError("VA-API encoder disconnected")
+            pending = pending[sent:]
+
+    def encode(self, frame):
+        image = frame.reformat(format="nv12")
+        deadline = time.monotonic() + self.io_timeout
+        pts = int(frame.pts * frame.time_base * 90000)
+        self._write(struct.pack("<IIIIq", self.width, self.height, self.bit_rate, int(frame.pict_type == av.video.frame.PictureType.I), pts), deadline)
+        for index, plane in enumerate(image.planes):
+            rows = self.height if index == 0 else self.height // 2
+            pixels = memoryview(plane)
+            if plane.line_size == self.width:
+                self._write(pixels[:rows * self.width], deadline)
+            else:
+                for row in range(rows):
+                    self._write(pixels[row * plane.line_size:row * plane.line_size + self.width], deadline)
+        size = struct.unpack("<i", self._read(4, deadline))[0]
+        if size < 0 or size > 32 * 1024 * 1024:
+            raise RuntimeError("VA-API encoder refused the frame")
+        return [av.Packet(self._read(size, deadline))] if size else []
+
+    def close(self):
+        process, self.process = getattr(self, "process", None), None
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                pass  # A stuck kernel device must not prevent software fallback.
+            process.stdin.close()
+            process.stdout.close()
+
+    def __del__(self):
+        self.close()
+
+
 class ScreenH264Encoder(H264Encoder):
     """Screen-oriented encoder for the pinned aiortc 1.16 factory, in this worker only."""
 
-    def __init__(self, prefer_hardware=None):
+    def __init__(self, prefer_hardware=None, hardware_backend=None):
         super().__init__()
-        self._hardware = sys.platform == "win32" if prefer_hardware is None else prefer_hardware
+        self._hardware = (sys.platform == "win32" or bool(os.environ.get("PASEO_REMOTE_CONTROL_VAAPI_ENCODER"))) if prefer_hardware is None else prefer_hardware
+        self._hardware_backend = hardware_backend or ("h264_vaapi" if sys.platform == "linux" and os.environ.get("PASEO_REMOTE_CONTROL_VAAPI_ENCODER") else "h264_nvenc")
         self._hardware_failed = False
         self._reported_backend = None
         self._bitrate = 1_000_000
@@ -107,7 +205,7 @@ class ScreenH264Encoder(H264Encoder):
             self._probe_target = min(self._desired, self._bitrate * 5 // 4)
             self._bitrate = self._probe_target
             self._probe_after = time.monotonic() + 1
-        if self.codec and self.codec.name == "h264_nvenc":
+        if self.codec and self.codec.name in ("h264_nvenc", "h264_vaapi"):
             # FFmpeg's NVENC wrapper reconfigures supported dynamic rate control
             # from AVCodecContext.bit_rate on the next frame. Avoid reopening a
             # GPU session for every REMB update (which stalls for ~200 ms).
@@ -116,10 +214,12 @@ class ScreenH264Encoder(H264Encoder):
                            or abs(self.target_bitrate - self.codec.bit_rate) / self.codec.bit_rate > 0.1):
             self.buffer_data = b""
             self.buffer_pts = None
+            if isinstance(self.codec, VaapiCodec):
+                self.codec.close()
             self.codec = None
         if self.codec is None:
             try:
-                self.codec = self._create_codec("h264_nvenc" if self._hardware and not self._hardware_failed else "libx264", size)
+                self.codec = self._create_codec(self._hardware_backend if self._hardware and not self._hardware_failed else "libx264", size)
             except Exception:
                 if not self._hardware or self._hardware_failed:
                     raise
@@ -128,11 +228,13 @@ class ScreenH264Encoder(H264Encoder):
         try:
             yield from super()._encode_frame(frame, force_keyframe)
         except Exception:
-            if self.codec is None or self.codec.name != "h264_nvenc":
+            if self.codec is None or self.codec.name not in ("h264_nvenc", "h264_vaapi"):
                 raise
             # Driver/session exhaustion and device loss must not end the viewer.
             # Start a fresh software stream with an IDR on the same input frame.
             self._hardware_failed = True
+            if isinstance(self.codec, VaapiCodec):
+                self.codec.close()
             self.codec = None
             self.buffer_data, self.buffer_pts = b"", None
             self.codec = self._create_codec("libx264", size)
@@ -142,6 +244,8 @@ class ScreenH264Encoder(H264Encoder):
             emit({"event": "encoder", "backend": self.codec.name, "fallback": self._hardware_failed})
 
     def _create_codec(self, name, size):
+        if name == "h264_vaapi":
+            return VaapiCodec(size, self.target_bitrate)
         codec = av.CodecContext.create(name, "w")
         codec.width, codec.height = size
         codec.bit_rate = self.target_bitrate
@@ -369,7 +473,7 @@ async def offer(message):
             width, fps = int(message["width"]), int(message["fps"])
             process = subprocess.Popen([
                 message["recorder"], "-o", message["output"], "--no-dmabuf", "-c", "rawvideo", "-m", "nut",
-                "-F", capture_filter(width, fps), "-x", "yuv420p", "-f", "pipe:1",
+                "-F", capture_filter(width, fps), "-x", "nv12" if os.environ.get("PASEO_REMOTE_CONTROL_VAAPI_ENCODER") else "yuv420p", "-f", "pipe:1",
             ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             state["capture"] = process
             player = await asyncio.to_thread(MediaPlayer, process.stdout, format="nut", options={"probesize": "32", "analyzeduration": "0"})
@@ -490,6 +594,8 @@ async def main():
         task.cancel()
     await asyncio.gather(*list(tasks), return_exceptions=True)
     await asyncio.gather(*(stop(session) for session in list(sessions)), return_exceptions=True)
+    for encoder in list(vaapi_encoders):
+        encoder.close()
 
 
 if __name__ == "__main__":

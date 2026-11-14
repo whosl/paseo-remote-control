@@ -5,6 +5,10 @@ import importlib.util
 import pathlib
 import unittest
 import os
+import sys
+import tempfile
+import struct
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -137,7 +141,7 @@ class HardwareFallbackTests(unittest.TestCase):
         self.assertEqual((decoded[0].width, decoded[0].height), (width, height))
 
     def test_missing_driver_falls_back_once_and_retains_network_feedback(self):
-        encoder = worker.ScreenH264Encoder(prefer_hardware=True)
+        encoder = worker.ScreenH264Encoder(prefer_hardware=True, hardware_backend="h264_nvenc")
         create = encoder._create_codec
         attempts = []
         def unavailable(name, size):
@@ -157,7 +161,7 @@ class HardwareFallbackTests(unittest.TestCase):
             report.assert_called_once_with({"event": "encoder", "backend": "libx264", "fallback": True})
 
     def test_device_loss_reencodes_the_same_frame_as_a_software_idr(self):
-        encoder = worker.ScreenH264Encoder(prefer_hardware=True)
+        encoder = worker.ScreenH264Encoder(prefer_hardware=True, hardware_backend="h264_nvenc")
         create = encoder._create_codec
         broken = SimpleNamespace(name="h264_nvenc", width=640, height=480, bit_rate=1_000_000)
         def lost(_frame):
@@ -178,7 +182,7 @@ class HardwareFallbackTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("PASEO_RC_RUN_NVENC") == "1", "requires an explicitly selected NVENC host")
     def test_real_gpu_bgra_resize_dynamic_bitrate_and_independent_idr_decode(self):
-        encoder = worker.ScreenH264Encoder(prefer_hardware=True)
+        encoder = worker.ScreenH264Encoder(prefer_hardware=True, hardware_backend="h264_nvenc")
         with patch.object(worker, "emit"):
             for width, height in [(1920, 1080), (1280, 720), (2560, 1440)]:
                 image = av.VideoFrame(width, height, "bgra")
@@ -199,6 +203,89 @@ class HardwareFallbackTests(unittest.TestCase):
                 self.assertIs(encoder.codec, context)
                 self.assertEqual(encoder.codec.bit_rate, 3_000_000)
                 self.assert_decodable(payloads, width, height)
+
+
+class VaapiFallbackTests(unittest.TestCase):
+    def assert_decodable(self, payloads):
+        decoder = av.CodecContext.create("h264", "r")
+        decoded = decoder.decode(av.Packet(b"".join(h264_depayload(payload) for payload in payloads)))
+        self.assertEqual((decoded[0].width, decoded[0].height), (640, 480))
+
+    def test_missing_executable_falls_back_without_changing_the_frame(self):
+        with patch.dict(os.environ, {"PASEO_REMOTE_CONTROL_VAAPI_ENCODER": "/nonexistent/paseo-vaapi"}), patch.object(worker, "emit") as report:
+            encoder = worker.ScreenH264Encoder(prefer_hardware=True, hardware_backend="h264_vaapi")
+            payloads, timestamp = encoder.encode(frame(640, 480, 3))
+            self.assert_decodable(payloads)
+            self.assertEqual(timestamp, 9000)
+            self.assertEqual(encoder.codec.name, "libx264")
+            report.assert_called_once_with({"event": "encoder", "backend": "libx264", "fallback": True})
+
+    @unittest.skipUnless(sys.platform == "linux", "POSIX private-pipe helper")
+    def test_bad_protocol_frame_rejection_and_timeout_release_the_child(self):
+        scripts = {
+            "bad_hello": "import os; os.write(1,b'BAD!')",
+            "reject": "import os,struct; os.write(1,b'PVA1'); os.read(0,24); remaining=640*480*3//2\nwhile remaining: remaining-=len(os.read(0,min(remaining,65536)))\nos.write(1,struct.pack('<i',-1))",
+            "hang": "import os,time; os.write(1,b'PVA1'); time.sleep(30)",
+        }
+        for name, script in scripts.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                binary = pathlib.Path(directory) / "fake-encoder"
+                binary.write_text("#!" + sys.executable + "\n" + script)
+                binary.chmod(0o700)
+                real_popen, children = worker.subprocess.Popen, []
+                def launch(*args, **kwargs):
+                    child = real_popen(*args, **kwargs)
+                    children.append(child)
+                    return child
+                with patch.dict(os.environ, {"PASEO_REMOTE_CONTROL_VAAPI_ENCODER": str(binary)}), patch.object(worker.subprocess, "Popen", side_effect=launch), patch.object(worker.VaapiCodec, "io_timeout", 0.2), patch.object(worker, "emit"):
+                    encoder = worker.ScreenH264Encoder(prefer_hardware=True, hardware_backend="h264_vaapi")
+                    payloads, _ = encoder.encode(frame(640, 480))
+                    self.assert_decodable(payloads)
+                    self.assertEqual(encoder.codec.name, "libx264")
+                    self.assertEqual(len(children), 1)
+                    self.assertIsNotNone(children[0].poll())
+
+
+@unittest.skipUnless(os.environ.get("PASEO_RC_RUN_VAAPI") == "1", "requires an explicitly selected VA-API host")
+class RealVaapiTests(unittest.TestCase):
+    def test_real_gpu_resize_rate_updates_and_independent_keyframes(self):
+        encoder = worker.ScreenH264Encoder(prefer_hardware=True, hardware_backend="h264_vaapi")
+        try:
+            for width, height in [(1280, 720), (1920, 1080), (2560, 1440)]:
+                image = frame(width, height)
+                payloads, _ = encoder.encode(image, True)
+                self.assertEqual(encoder.codec.name, "h264_vaapi")
+                self.assertFalse(encoder._hardware_failed)
+                codec, pid = encoder.codec, encoder.codec.process.pid
+                for index, bitrate in enumerate([300_000, 3_000_000, 3_000_000]):
+                    encoder.target_bitrate = bitrate
+                    image.pts = index + 1
+                    payloads, _ = encoder.encode(image, True)
+                    decoder = av.CodecContext.create("h264", "r")
+                    decoded = decoder.decode(av.Packet(b"".join(h264_depayload(p) for p in payloads)))
+                    self.assertEqual((decoded[0].width, decoded[0].height), (width, height))
+                    self.assertIs(encoder.codec, codec)
+                    self.assertEqual(codec.process.pid, pid)
+                    self.assertEqual(codec.bit_rate, bitrate)
+        finally:
+            if isinstance(encoder.codec, worker.VaapiCodec):
+                encoder.codec.close()
+        self.assertIsNone(codec.process)
+
+    def test_missing_drm_device_falls_back_to_software(self):
+        with patch.dict(os.environ, {"PASEO_REMOTE_CONTROL_VAAPI_DEVICE": "/dev/dri/renderD99999"}), patch.object(worker, "emit"):
+            encoder = worker.ScreenH264Encoder(prefer_hardware=True, hardware_backend="h264_vaapi")
+            payloads, _ = encoder.encode(frame(640, 480))
+            self.assertEqual(encoder.codec.name, "libx264")
+            self.assertTrue(payloads)
+
+    def test_native_protocol_refuses_invalid_shapes_and_bitrates(self):
+        binary = os.environ["PASEO_REMOTE_CONTROL_VAAPI_ENCODER"]
+        device = os.environ.get("PASEO_REMOTE_CONTROL_VAAPI_DEVICE", "/dev/dri/renderD128")
+        for width, height, bitrate, key in [(0, 1080, 1000000, 0), (1921, 1080, 1000000, 0), (2562, 1440, 1000000, 0), (1920, 1080, 1, 0), (1920, 1080, 1000000, 2)]:
+            child = subprocess.run([binary, device], input=struct.pack("<IIIIq", width, height, bitrate, key, 0), capture_output=True, timeout=3)
+            self.assertEqual(child.returncode, 1)
+            self.assertEqual(child.stdout, b"PVA1" + struct.pack("<i", -1))
 
 
 class PacingTests(unittest.IsolatedAsyncioTestCase):

@@ -34,8 +34,9 @@ optional Python media environment can also send encrypted
 H.264 video to supported browsers and Android clients that include Paseo's WebView,
 with quality presets up to 2560 pixels wide and 30 frames per second. Video bitrate
 adapts to the receiving connection; static desktops use less traffic. Windows
-uses NVIDIA hardware encoding when available and falls back to software encoding
-if the driver or GPU cannot serve the stream.
+uses NVIDIA hardware encoding when available. Linux can use VA-API hardware
+encoding after the optional native helper is provisioned. Both fall back to software
+encoding if the driver or GPU cannot serve the stream.
 Android reuses that installed component; unavailable or failed video falls back
 to JPEG. iOS uses JPEG. A host administrator can configure STUN and authenticated
 TURN for outside-network viewing. Direct paths are preferred, and the picture

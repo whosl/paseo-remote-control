@@ -132,6 +132,22 @@ Outside-network viewing can use host-configured STUN and authenticated TURN;
 without that configuration there is no guaranteed Internet NAT traversal. Failed
 video automatically falls back to JPEG.
 
+Linux can optionally use the GPU's VA-API H.264 encoder. Install the host's
+FFmpeg development headers (`libavcodec-dev`, `libavutil-dev` and `pkg-config` on
+Debian/Ubuntu), then run `node scripts/build-vaapi.mjs` on that host. The helper
+is installed under `~/.local/share/paseo-screen/bin/vaapi-encoder-v1`. A local
+SDK extracted from matching distribution development packages can instead be
+passed with `--sdk /path/to/extracted-packages`; no root installation is required.
+The default render device is `/dev/dri/renderD128`, overridable with the daemon's
+`PASEO_REMOTE_CONTROL_VAAPI_DEVICE`. The daemon user needs render-device access.
+
+The private helper uses the system FFmpeg and Mesa driver in a separate process,
+so PyAV wheels without VA-API support remain usable. It receives raw NV12 frames
+through bounded private pipes and returns H.264 packets; it cannot capture a
+screen or inject input. Hardware errors, malformed replies and timeouts retry the
+same frame as a software-encoded keyframe. Linux hosts without this optional
+helper keep using x264. Plugin logs identify `h264_vaapi` or `libx264`.
+
 WebRTC Fast, Balanced and Sharp request up to 1280, 1920 and 2560 pixels wide,
 all at up to 30 FPS. The screen encoder starts conservatively at 1 Mbps and probes
 upward gradually, with ceilings of 4, 8 and 12 Mbps for 720p, 1080p and 1440p frames.

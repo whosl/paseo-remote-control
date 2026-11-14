@@ -36,7 +36,14 @@ the live context bitrate through FFmpeg NVENC reconfiguration rather than reopen
 a GPU session. Initialization failure or device loss retries the same frame as an
 x264 IDR and keeps that viewer on software encoding. Worker stdout notifications
 report only the selected encoder and fallback state, serialized with RPC replies
-under a shared lock. A quantized capture filter avoids undershooting the
+under a shared lock. Linux VA-API uses `helper/screen/vaapi-encoder.c`, compiled
+against the host FFmpeg and run in a separate process to avoid ABI collisions with
+PyAV wheels. A versioned, bounded private-pipe protocol carries tight NV12 frames,
+bitrate, timestamps and keyframe requests, then length-prefixed Annex-B output.
+VA-API device handles survive rate changes; encoder contexts restart on meaningful
+changes and emit fresh SPS/PPS and an IDR. Python reads/writes have a three-second
+budget; errors close the owned process and retry that frame with x264. No network
+listener or JPEG round trip is involved. A quantized capture filter avoids undershooting the
 requested cadence when compositor timestamps jitter. Old screenshot helpers
 remain for other desktops. Windows uses the existing limited interactive C# helper
 for raw BGRA capture. It checks stable monitor identity, geometry and unlocked
