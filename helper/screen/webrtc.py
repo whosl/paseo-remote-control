@@ -131,7 +131,9 @@ class VideoPacer:
             await self.send(data)
             encoder = self.encoder()
             rate = encoder.target_bitrate if isinstance(encoder, ScreenH264Encoder) else 1_000_000
-            self.deadline = max(self.deadline, loop.time() - 0.003) + (len(data) + 64) * 8 / (rate * 1.1)
+            # Leave room for encoding time and frame-size variation. The media
+            # budget/loss controller sets the average rate; pacing smooths bursts.
+            self.deadline = max(self.deadline, loop.time() - 0.003) + (len(data) + 64) * 8 / (rate * 1.5)
 
 
 async def watch_loss(state):
